@@ -1,0 +1,42 @@
+{
+  "name": "outhired",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "node --conditions=react-server --import tsx --test tests/dates.test.ts tests/dates.tz.test.ts tests/roles.test.ts tests/flow.test.ts tests/postedMonth.test.ts tests/ssrf.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "@hookform/resolvers": "^5.9.2",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/pg": "^8.21.0",
+    "bcryptjs": "^3.0.3",
+    "fuse.js": "^7.5.0",
+    "next": "16.3.0",
+    "next-auth": "^4.24.15",
+    "pg": "^8.23.0",
+    "prisma": "^7.9.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-hook-form": "^7.90.0",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  }
+}
