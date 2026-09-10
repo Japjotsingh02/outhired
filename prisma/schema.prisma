@@ -1,0 +1,160 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+model User {
+  id             String         @id @default(cuid())
+  email          String         @unique
+  passwordHash   String
+  name           String
+  headline       String?
+  linkedinUrl    String?
+  githubUrl      String?
+  portfolioUrl   String?
+  resumeText     String?
+  skills         String[]
+  experienceYrs  Float?
+  // Scraped LinkedIn profile (JSON blob from the linkedin-api scraper)
+  linkedinData   Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  jobs           Job[]
+  votes          Vote[]
+  profileMatches ProfileMatch[]
+
+  @@map("users")
+}
+
+model Job {
+  id          String      @id @default(cuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  url         String?
+  domain      String?
+  company     String
+  role        String
+  team        String?
+  seniority   Seniority   @default(UNKNOWN)
+  location    String?
+  skills      String[]
+  status      JobStatus   @default(PENDING)
+  inputMode   InputMode   @default(URL)
+  // Always the 1st of the month at UTC midnight ("YYYY-MM-01"). Required.
+  postedMonth DateTime    @db.Date
+  appliedDate DateTime    @default(now())
+  candidates  Candidate[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([userId, company, role, postedMonth])
+  @@index([userId])
+  @@map("jobs")
+}
+
+model Candidate {
+  id             String         @id @default(cuid())
+  jobId          String
+  job            Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  apolloId       String?
+  name           String
+  initials       String
+  title          String
+  headline       String?
+  linkedinUrl    String?
+  githubUrl      String?
+  portfolioUrl   String?
+  location       String?
+  currentCompany String?
+  previousRole   String?
+  skills         String[]
+  education      String?
+  apolloSource   Boolean        @default(true)
+  votes          Vote[]
+  profileMatches ProfileMatch[]
+  // Scraped LinkedIn profile cache
+  linkedinData   Json?
+  lastScrapedAt  DateTime?
+  createdAt      DateTime       @default(now())
+
+  @@unique([jobId, apolloId])
+  @@index([jobId])
+  @@map("candidates")
+}
+
+model Vote {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  candidateId String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  type        VoteType
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, candidateId])
+  @@index([candidateId])
+  @@map("votes")
+}
+
+model ProfileMatch {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  candidateId     String
+  candidate       Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  score           Int
+  summary         String
+  sharedStrengths String[]
+  gaps            String[]
+  advice          String
+  createdAt       DateTime  @default(now())
+
+  // One analysis per user + candidate pair: Claude is never called twice for the same pair.
+  @@unique([userId, candidateId])
+  @@index([candidateId])
+  @@map("profile_matches")
+}
+
+model ParsedJob {
+  id        String   @id @default(cuid())
+  url       String   @unique
+  data      Json
+  parsedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("parsed_jobs")
+}
+
+enum JobStatus {
+  PENDING
+  REJECTED
+  INTERVIEWING
+}
+
+enum InputMode {
+  URL
+  DESCRIPTION
+  MANUAL
+}
+
+enum Seniority {
+  JUNIOR
+  MID
+  SENIOR
+  STAFF
+  UNKNOWN
+}
+
+enum VoteType {
+  YES
+  NO
+}
