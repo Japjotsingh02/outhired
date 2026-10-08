@@ -1,56 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/server/security/authOptions";
+import { getSessionOrThrow } from "@/server/security/auth";
 import { compareProfiles } from "@/lib/claude";
 import { scrapeLinkedInProfile, formatProxycurlForComparison } from "@/lib/proxycurl";
 import { prisma } from "@/server/db";
+import { handle, readJsonBody } from "@/server/http";
+import { BadRequestError, NotFoundError } from "@/server/errors";
+import { requireCompleteProfile } from "@/server/services/profile.service";
 import { isUniqueViolation } from "@/lib/prismaErrors";
 
 // ─── POST /api/compare-profile ────────────────────────────────────────────────
 // Compares the logged-in user's profile against a candidate using Claude AI.
 // Results are cached in ProfileMatch so repeat calls are free.
-export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+export const POST = handle(async (req: NextRequest) => {
+  const { id: userId } = await getSessionOrThrow();
 
-  const { candidateId, jobTitle } = (await req.json()) as {
+  // Compare needs a complete profile. Check before any scraping or Claude call.
+  await requireCompleteProfile(userId);
+
+  const { candidateId, jobTitle } = (await readJsonBody(req)) as {
     candidateId: string;
     jobTitle: string;
   };
 
-  if (!candidateId || !jobTitle) {
-    return NextResponse.json(
-      { error: "candidateId and jobTitle required" },
-      { status: 400 },
-    );
-  }
+  if (!candidateId || !jobTitle) throw new BadRequestError("candidateId and jobTitle required");
 
   // ── 1. Return cached result if available ────────────────────────────────────
   // One analysis per (user, candidate) pair — enforced by a unique constraint.
   const cached = await prisma.profileMatch.findUnique({
-    where: { userId_candidateId: { userId: session.user.id, candidateId } },
+    where: { userId_candidateId: { userId, candidateId } },
   });
 
   if (cached) return NextResponse.json(cachedMatchResponse(cached));
 
   // ── 2. Load user + candidate ────────────────────────────────────────────────
   const [user, candidate] = await Promise.all([
-    prisma.user.findUnique({ where: { id: session.user.id } }),
+    prisma.user.findUnique({ where: { id: userId } }),
     prisma.candidate.findUnique({ where: { id: candidateId } }),
   ]);
 
-  if (!user || !candidate) {
-    return NextResponse.json({ error: "User or candidate not found" }, { status: 404 });
-  }
+  if (!user || !candidate) throw new NotFoundError("User or candidate not found");
 
-  if (!candidate.linkedinUrl) {
-    return NextResponse.json(
-      { error: "Candidate has no LinkedIn URL" },
-      { status: 400 },
-    );
-  }
+  if (!candidate.linkedinUrl) throw new BadRequestError("Candidate has no LinkedIn URL");
 
   // ── 3. Build profile texts ──────────────────────────────────────────────────
   const userProfileText = await resolveUserProfileText(user);
@@ -63,7 +53,7 @@ export async function POST(req: NextRequest) {
   try {
     const saved = await prisma.profileMatch.create({
       data: {
-        userId: session.user.id,
+        userId,
         candidateId,
         score: result.score,
         summary: result.summary,
@@ -77,12 +67,12 @@ export async function POST(req: NextRequest) {
     if (!isUniqueViolation(err)) throw err;
     // A concurrent request saved this pair first: return that one.
     const existing = await prisma.profileMatch.findUnique({
-      where: { userId_candidateId: { userId: session.user.id, candidateId } },
+      where: { userId_candidateId: { userId, candidateId } },
     });
     if (!existing) throw err;
     return NextResponse.json(cachedMatchResponse(existing));
   }
-}
+});
 
 function cachedMatchResponse(match: {
   score: number;

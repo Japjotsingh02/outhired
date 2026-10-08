@@ -1,21 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/server/db";
+import { BadRequestError, ConflictError } from "@/server/errors";
+import { handle, readJsonBody } from "@/server/http";
 import bcrypt from "bcryptjs";
 
-export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const { email, password, name } = body as {
+export const POST = handle(async (req: NextRequest) => {
+  const body = await readJsonBody(req);
+  const { email, password, name } = (body ?? {}) as {
     email: string;
     password: string;
     name: string;
   };
 
   if (!email || !password || !name) {
-    return NextResponse.json({ error: "email, password, and name are required" }, { status: 400 });
+    throw new BadRequestError("email, password, and name are required");
   }
 
   if (password.length < 8) {
-    return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
+    throw new BadRequestError("Password must be at least 8 characters", {
+      issues: [{ path: "password", message: "Password must be at least 8 characters" }],
+    });
   }
 
   const existing = await prisma.user.findUnique({
@@ -23,7 +27,9 @@ export async function POST(req: NextRequest) {
   });
 
   if (existing) {
-    return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
+    throw new ConflictError("An account with this email already exists", {
+      issues: [{ path: "email", message: "An account with this email already exists" }],
+    }, "EMAIL_TAKEN");
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
@@ -37,4 +43,4 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json({ id: user.id, email: user.email, name: user.name }, { status: 201 });
-}
+});
