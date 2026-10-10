@@ -16,8 +16,8 @@ export class AppError extends Error {
 }
 
 export class BadRequestError extends AppError {
-  constructor(message = "Bad request", details?: unknown) {
-    super(400, "BAD_REQUEST", message, details);
+  constructor(message = "Bad request", details?: unknown, code = "BAD_REQUEST") {
+    super(400, code, message, details);
   }
 }
 
@@ -28,8 +28,8 @@ export class UnauthorizedError extends AppError {
 }
 
 export class ForbiddenError extends AppError {
-  constructor(message = "Forbidden", details?: unknown) {
-    super(403, "FORBIDDEN", message, details);
+  constructor(message = "Forbidden", details?: unknown, code = "FORBIDDEN") {
+    super(403, code, message, details);
   }
 }
 
@@ -40,14 +40,18 @@ export class NotFoundError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message = "Conflict", details?: unknown) {
-    super(409, "CONFLICT", message, details);
+  constructor(message = "Conflict", details?: unknown, code = "CONFLICT") {
+    super(409, code, message, details);
   }
 }
 
 export class RateLimitedError extends AppError {
-  constructor(message = "Too many requests", details?: unknown) {
-    super(429, "RATE_LIMITED", message, details);
+  /** Seconds until the caller may try again; sent as the Retry-After header and details.retryAfterSeconds. */
+  readonly retryAfterSeconds?: number;
+
+  constructor(message = "Too many requests", details?: unknown, code = "RATE_LIMITED", retryAfterSeconds?: number) {
+    super(429, code, message, details);
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
