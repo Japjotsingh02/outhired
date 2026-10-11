@@ -6,9 +6,10 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { AuthSplit } from "@/components/AuthSplit";
-import { FieldError } from "@/components/ui";
+import { AuthFormError, AuthNote, AuthSwitchLink, AuthTextField } from "@/components/AuthFields";
+import { fieldErrorsFromApiError, getErrorMessage } from "@/lib/apiClient";
+import { useSignup } from "@/lib/queries/auth";
 
 const signupSchema = z.object({
   name: z.string().trim().min(1, "Enter your name"),
@@ -19,11 +20,13 @@ type SignupValues = z.infer<typeof signupSchema>;
 
 export default function SignupPage() {
   const router = useRouter();
+  const signup = useSignup();
   const [error, setError] = useState("");
   const {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
+    setError: setFieldError,
   } = useForm<SignupValues>({
     resolver: zodResolver(signupSchema),
     defaultValues: { name: "", email: "", password: "" },
@@ -31,20 +34,35 @@ export default function SignupPage() {
 
   async function onSubmit({ name, email, password }: SignupValues) {
     setError("");
-    const res = await fetch("/api/auth/signup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password }),
-    });
-
-    if (!res.ok) {
-      const data = await res.json();
-      setError(data.error ?? "Something went wrong");
+    try {
+      await signup.mutateAsync({ name, email, password });
+    } catch (err) {
+      // Field problems (taken email, short password) go on the field; the form shows the rest.
+      const fields = fieldErrorsFromApiError(err);
+      let placed = false;
+      for (const field of ["name", "email", "password"] as const) {
+        if (fields[field]) {
+          setFieldError(field, { message: fields[field] });
+          placed = true;
+        }
+      }
+      if (!placed) setError(getErrorMessage(err));
       return;
     }
 
-    await signIn("credentials", { email, password, redirect: false });
-    router.push("/");
+    // The account exists now; if signing in fails the login page is the next step.
+    try {
+      const result = await signIn("credentials", { email, password, redirect: false });
+      if (result?.error) {
+        router.push("/login");
+        return;
+      }
+    } catch (err) {
+      console.error("[signup] Automatic sign-in failed:", err);
+      router.push("/login");
+      return;
+    }
+    router.push("/profile?welcome=1");
     router.refresh();
   }
 
@@ -79,79 +97,46 @@ export default function SignupPage() {
       </p>
 
       <form onSubmit={handleSubmit(onSubmit)} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div>
-          <label className="field-label" htmlFor="name">
-            Full name
-          </label>
-          <input
-            id="name"
-            className="input"
-            type="text"
-            placeholder="Alex Morgan"
-            autoFocus
-            {...register("name")}
-          />
-          <FieldError message={errors.name?.message} />
-        </div>
+        <AuthTextField
+          id="name"
+          label="Full name"
+          type="text"
+          placeholder="Alex Morgan"
+          autoFocus
+          registration={register("name")}
+          error={errors.name?.message}
+        />
 
-        <div>
-          <label className="field-label" htmlFor="signup-email">
-            Email
-          </label>
-          <input
-            id="signup-email"
-            className="input"
-            type="email"
-            placeholder="you@example.com"
-            {...register("email")}
-          />
-          <FieldError message={errors.email?.message} />
-        </div>
+        <AuthTextField
+          id="signup-email"
+          label="Email"
+          type="email"
+          placeholder="you@example.com"
+          registration={register("email")}
+          error={errors.email?.message}
+        />
 
-        <div>
-          <label className="field-label" htmlFor="signup-password">
-            Password
-          </label>
-          <input
-            id="signup-password"
-            className="input"
-            type="password"
-            placeholder="Min 8 characters"
-            {...register("password")}
-          />
-          <FieldError message={errors.password?.message} />
-        </div>
+        <AuthTextField
+          id="signup-password"
+          label="Password"
+          type="password"
+          placeholder="Min 8 characters"
+          registration={register("password")}
+          error={errors.password?.message}
+        />
 
-        {error && (
-          <p style={{ color: "var(--red)", fontSize: 13, borderLeft: "2px solid var(--red)", paddingLeft: 10 }}>
-            {error}
-          </p>
-        )}
+        <AuthFormError message={error} />
 
         <button id="signup-submit" type="submit" className="btn-primary" disabled={isSubmitting}>
           {isSubmitting ? "Creating account…" : "Create account"}
         </button>
       </form>
 
-      <p
-        style={{
-          marginTop: 24,
-          fontSize: 13,
-          color: "var(--text-secondary)",
-          borderLeft: "2px solid var(--accent)",
-          paddingLeft: 12,
-          lineHeight: 1.5,
-        }}
-      >
+      <AuthNote marginTop={24}>
         OutHired uses your profile only for the comparisons you choose. You can edit, export, or remove your data at any time.
-      </p>
+      </AuthNote>
 
-      <p style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>
-        Already have an account?{" "}
-        <Link href="/login" style={{ color: "var(--text-primary)", textDecoration: "underline", textUnderlineOffset: 3 }}>
-          Log in
-        </Link>
-      </p>
+      <AuthSwitchLink prompt="Already have an account?" href="/login" linkText="Log in" marginTop={16} />
     </AuthSplit>
   );
 }
