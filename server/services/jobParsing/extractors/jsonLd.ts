@@ -1,8 +1,8 @@
 import "server-only";
 import type { ExtractionLayer } from "@/types/jobParsing";
+import { errorMessage } from "@/lib/errorMessage";
 import {
   asRecord,
-  errorMessage,
   stringOrArray,
   stringValue,
 } from "@/server/services/jobParsing/utils/values";
