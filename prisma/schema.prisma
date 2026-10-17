@@ -6,11 +6,9 @@ generator client {
   output   = "../generated/prisma"
 }
 
-
 datasource db {
   provider = "postgresql"
 }
-
 
 model User {
   id             String         @id @default(cuid())
@@ -26,6 +24,8 @@ model User {
   experienceYrs  Float?
   // Scraped LinkedIn profile (JSON blob from the linkedin-api scraper)
   linkedinData   Json?
+  // Set once, when the user saves or skips onboarding. Never inferred from profile contents.
+  onboardedAt    DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
   jobs           Job[]
@@ -36,25 +36,33 @@ model User {
 }
 
 model Job {
-  id          String      @id @default(cuid())
-  userId      String
-  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  url         String?
-  domain      String?
-  company     String
-  role        String
-  team        String?
-  seniority   Seniority   @default(UNKNOWN)
-  location    String?
-  skills      String[]
-  status      JobStatus   @default(PENDING)
-  inputMode   InputMode   @default(URL)
+  id              String       @id @default(cuid())
+  userId          String
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  url             String?
+  domain          String?
+  company         String
+  role            String
+  team            String?
+  seniority       Seniority    @default(UNKNOWN)
+  location        String?
+  skills          String[]
+  status          JobStatus    @default(PENDING)
+  inputMode       InputMode    @default(URL)
   // Always the 1st of the month at UTC midnight ("YYYY-MM-01"). Required.
-  postedMonth DateTime    @db.Date
-  appliedDate DateTime    @default(now())
-  candidates  Candidate[]
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  postedMonth     DateTime     @db.Date
+  appliedDate     DateTime     @default(now())
+  // Hire discovery state (see server/services/hireSearch). searchError is a short code only.
+  searchStatus    SearchStatus @default(NOT_STARTED)
+  searchRunId     String?
+  searchDatasetId String?
+  searchStartedAt DateTime?
+  lastSearchedAt  DateTime?
+  searchError     String?
+  searchCostUsd   Float?
+  candidates      Candidate[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   @@unique([userId, company, role, postedMonth])
   @@index([userId])
@@ -62,31 +70,43 @@ model Job {
 }
 
 model Candidate {
-  id             String         @id @default(cuid())
-  jobId          String
-  job            Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  apolloId       String?
-  name           String
-  initials       String
-  title          String
-  headline       String?
-  linkedinUrl    String?
-  githubUrl      String?
-  portfolioUrl   String?
-  location       String?
-  currentCompany String?
-  previousRole   String?
-  skills         String[]
-  education      String?
-  apolloSource   Boolean        @default(true)
-  votes          Vote[]
-  profileMatches ProfileMatch[]
+  id                 String          @id @default(cuid())
+  jobId              String
+  job                Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  externalId         String?
+  source             HireSourceKind  @default(APIFY_NEW_HIRES)
+  name               String
+  initials           String
+  title              String
+  headline           String?
+  linkedinUrl        String?
+  githubUrl          String?
+  portfolioUrl       String?
+  location           String?
+  currentCompany     String?
+  previousRole       String?
+  skills             String[]
+  education          String?
+  // Always the 1st of the month (UTC); year-only rows use Jan 1 and set startedYearOnly.
+  startedMonth       DateTime?       @db.Date
+  startedYearOnly    Boolean         @default(false)
+  previousCompany    String?
+  previousEndedMonth DateTime?       @db.Date
+  seniorityBucket    String?
+  countryCode        String?
+  roleMatchScore     Float?
+  confidence         MatchConfidence @default(MEDIUM)
+  sourceUpdatedAt    DateTime?
+  // Set for takedown requests; hidden candidates are never returned.
+  hidden             Boolean         @default(false)
+  votes              Vote[]
+  profileMatches     ProfileMatch[]
   // Scraped LinkedIn profile cache
-  linkedinData   Json?
-  lastScrapedAt  DateTime?
-  createdAt      DateTime       @default(now())
+  linkedinData       Json?
+  lastScrapedAt      DateTime?
+  createdAt          DateTime        @default(now())
 
-  @@unique([jobId, apolloId])
+  @@unique([jobId, source, externalId])
   @@index([jobId])
   @@map("candidates")
 }
@@ -132,6 +152,41 @@ model ParsedJob {
   updatedAt DateTime @updatedAt
 
   @@map("parsed_jobs")
+}
+
+// Validated provider rows, shared across users. Never holds failed or unverified results.
+model HireSearchCache {
+  id         String   @id @default(cuid())
+  cacheKey   String   @unique
+  domain     String
+  sinceMonth String
+  keywords   String[]
+  rows       Json
+  rowCount   Int
+  fetchedAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([expiresAt])
+  @@map("hire_search_cache")
+}
+
+enum HireSourceKind {
+  APIFY_NEW_HIRES
+  // Reserved: nothing writes it yet.
+  USER_REPORTED
+}
+
+enum SearchStatus {
+  NOT_STARTED
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum MatchConfidence {
+  HIGH
+  MEDIUM
+  LOW
 }
 
 enum JobStatus {
