@@ -2,8 +2,15 @@ import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { RATE_LIMIT, RATE_WINDOW_MS } from "@/constants";
 
-/** In-memory fallback when Redis is unavailable. */
-const localWindows = new Map<string, number[]>();
+export interface RateLimitOptions {
+  /** Namespace for the counter, e.g. "parse-job" or "hire-search". */
+  scope?: string;
+  limit?: number;
+  windowMs?: number;
+}
+
+/** In-memory fallback when Redis is unavailable. Each entry remembers its own window. */
+const localWindows = new Map<string, { timestamps: number[]; windowMs: number }>();
 
 const REDIS_SCRIPT = `
 local now = tonumber(ARGV[1])
@@ -11,18 +18,33 @@ local window = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
 local count = redis.call('ZCARD', KEYS[1])
-if count >= limit then return 0 end
+if count >= limit then
+  local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+  return {0, tonumber(oldest[2]) + window - now}
+end
 redis.call('ZADD', KEYS[1], now, ARGV[4])
 redis.call('PEXPIRE', KEYS[1], window)
-return count + 1
+return {count + 1, 0}
 `;
 
-/** Returns true when the caller should be blocked. Throws if Redis is reachable but errors. */
-export async function isRateLimited(ip: string): Promise<boolean> {
+export interface RateLimitResult {
+  limited: boolean;
+  /** Whole seconds until a slot frees up; 0 when not limited. */
+  retryAfterSeconds: number;
+}
+
+/**
+ * Counts this call and says whether the caller should be blocked, and for how long.
+ * Throws if Redis is reachable but errors.
+ */
+export async function checkRateLimit(
+  ip: string,
+  { scope = "parse-job", limit = RATE_LIMIT, windowMs = RATE_WINDOW_MS }: RateLimitOptions = {},
+): Promise<RateLimitResult> {
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL?.replace(/\/$/, "");
   const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-  if (!redisUrl || !redisToken) return isLocallyRateLimited(ip);
+  if (!redisUrl || !redisToken) return checkLocally(`${scope}:${ip}`, limit, windowMs);
 
   const keyHash = createHash("sha256").update(ip).digest("hex");
   const res = await fetch(`${redisUrl}/pipeline`, {
@@ -36,10 +58,10 @@ export async function isRateLimited(ip: string): Promise<boolean> {
         "EVAL",
         REDIS_SCRIPT,
         "1",
-        `outhired:parse-job:${keyHash}`,
+        `outhired:${scope}:${keyHash}`,
         String(Date.now()),
-        String(RATE_WINDOW_MS),
-        String(RATE_LIMIT),
+        String(windowMs),
+        String(limit),
         randomUUID(),
       ],
     ]),
@@ -47,22 +69,26 @@ export async function isRateLimited(ip: string): Promise<boolean> {
   });
 
   if (!res.ok) throw new Error("Upstash rate limit request failed");
-  const data = (await res.json()) as Array<{ result?: number; error?: string }>;
-  if (data[0]?.error) throw new Error("Upstash rate limit request failed");
-  return Number(data[0]?.result) === 0;
+  const data = (await res.json()) as Array<{ result?: [number, number]; error?: string }>;
+  if (data[0]?.error || !Array.isArray(data[0]?.result)) throw new Error("Upstash rate limit request failed");
+  const [count, retryMs] = data[0].result;
+  return { limited: Number(count) === 0, retryAfterSeconds: Math.max(1, Math.ceil(Number(retryMs) / 1000)) };
 }
 
-function isLocallyRateLimited(ip: string): boolean {
+function checkLocally(rawKey: string, limit: number, windowMs: number): RateLimitResult {
   const now = Date.now();
   // Drop every expired entry so the map cannot grow without bound.
-  for (const [windowKey, timestamps] of localWindows) {
-    const last = timestamps[timestamps.length - 1];
-    if (last === undefined || now - last >= RATE_WINDOW_MS) localWindows.delete(windowKey);
+  for (const [windowKey, entry] of localWindows) {
+    const last = entry.timestamps[entry.timestamps.length - 1];
+    if (last === undefined || now - last >= entry.windowMs) localWindows.delete(windowKey);
   }
-  const key = createHash("sha256").update(ip).digest("hex");
-  const recent = (localWindows.get(key) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  const limited = recent.length >= RATE_LIMIT;
+  const key = createHash("sha256").update(rawKey).digest("hex");
+  const recent = (localWindows.get(key)?.timestamps ?? []).filter((t) => now - t < windowMs);
+  const limited = recent.length >= limit;
   if (!limited) recent.push(now);
-  localWindows.set(key, recent);
-  return limited;
+  localWindows.set(key, { timestamps: recent, windowMs });
+  return {
+    limited,
+    retryAfterSeconds: limited ? Math.max(1, Math.ceil((recent[0] + windowMs - now) / 1000)) : 0,
+  };
 }
