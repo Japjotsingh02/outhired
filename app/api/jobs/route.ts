@@ -10,6 +10,9 @@ import { parseYearMonth, postedMonthToDate } from "@/lib/postedMonth";
 import { seniorityFromRole } from "@/server/services/seniority";
 import { isUniqueViolation } from "@/lib/prismaErrors";
 
+// Creating a job with a company website also runs the hire search inside this request.
+export const maxDuration = 30;
+
 // ─── GET /api/jobs ────────────────────────────────────────────────────────────
 // Returns all tracked jobs (with candidates + votes) for the logged-in user.
 export const GET = handle(async () => {
@@ -30,7 +33,7 @@ export const GET = handle(async () => {
 });
 
 // ─── POST /api/jobs ───────────────────────────────────────────────────────────
-// Creates a new tracked job, then fires an Apollo search to seed candidates.
+// Creates a new tracked job, then runs a hire search to seed candidates.
 export const POST = handle(async (req: NextRequest) => {
   const { id: userId, email } = await getSessionOrThrow();
 

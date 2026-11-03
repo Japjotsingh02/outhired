@@ -27,7 +27,7 @@
 | Database | PostgreSQL + Prisma ORM |
 | Auth | NextAuth v4 |
 | AI | Anthropic Claude (SDK) |
-| Candidate Search | Apollo.io API |
+| Candidate Search | People Data Labs (PDL) person search |
 | LinkedIn Enrichment | Proxycurl API |
 | Fuzzy Matching | Fuse.js + Jaccard similarity |
 
@@ -61,7 +61,7 @@ Fill in your `.env.local`:
 | `DATABASE_URL` | PostgreSQL connection string | Your DB provider |
 | `NEXTAUTH_SECRET` | Random secret for session signing | `openssl rand -base64 32` |
 | `NEXTAUTH_URL` | App base URL | `http://localhost:3000` for dev |
-| `APOLLO_API_KEY` | Apollo.io API key | [developer.apollo.io](https://developer.apollo.io) · free tier: 50 credits/mo |
+| `PDL_API_KEY` | People Data Labs key for hire discovery (1 credit per record returned; also see `PDL_MAX_RESULTS`, `PDL_MONTHLY_CREDIT_BUDGET`) | [docs.peopledatalabs.com](https://docs.peopledatalabs.com) · free plan: 100 credits/mo |
 | `PROXYCURL_API_KEY` | LinkedIn enrichment | [nubela.co/proxycurl](https://nubela.co/proxycurl) · ~$0.01/scrape |
 | `ANTHROPIC_API_KEY` | Claude AI for profile comparison | [console.anthropic.com](https://console.anthropic.com) |
 

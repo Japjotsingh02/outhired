@@ -26,11 +26,16 @@ model User {
   linkedinData   Json?
   // Set once, when the user saves or skips onboarding. Never inferred from profile contents.
   onboardedAt    DateTime?
+  // Billing plan. Changed by hand for now (scripts/set-plan.ts); an expired PRO counts as FREE.
+  plan           Plan           @default(FREE)
+  planStartedAt  DateTime?
+  planEndsAt     DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
   jobs           Job[]
   votes          Vote[]
   profileMatches ProfileMatch[]
+  usageEvents    UsageEvent[]
 
   @@map("users")
 }
@@ -54,12 +59,14 @@ model Job {
   appliedDate     DateTime     @default(now())
   // Hire discovery state (see server/services/hireSearch). searchError is a short code only.
   searchStatus    SearchStatus @default(NOT_STARTED)
-  searchRunId     String?
-  searchDatasetId String?
   searchStartedAt DateTime?
   lastSearchedAt  DateTime?
   searchError     String?
-  searchCostUsd   Float?
+  // Credits PDL charged for this search (1 per record returned); null for a cache hit.
+  searchCreditsUsed     Int?
+  // How many people matched in total, and how many matches were internal role changes we hid.
+  searchTotalMatches    Int?
+  searchSkippedInternal Int?
   candidates      Candidate[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
@@ -74,7 +81,7 @@ model Candidate {
   jobId              String
   job                Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
   externalId         String?
-  source             HireSourceKind  @default(APIFY_NEW_HIRES)
+  source             HireSourceKind  @default(PDL)
   name               String
   initials           String
   title              String
@@ -144,6 +151,22 @@ model ProfileMatch {
   @@map("profile_matches")
 }
 
+// One row per metered action (a hire search that called the provider, or a Compare).
+// Deleted again when the action fails before it produced anything (refund).
+model UsageEvent {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind        UsageKind
+  jobId       String?
+  // Provider credits spent by this event (PDL bills 1 per record returned).
+  creditsUsed Int       @default(0)
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, kind, createdAt])
+  @@map("usage_events")
+}
+
 model ParsedJob {
   id        String   @id @default(cuid())
   url       String   @unique
@@ -170,8 +193,18 @@ model HireSearchCache {
   @@map("hire_search_cache")
 }
 
+enum Plan {
+  FREE
+  PRO
+}
+
+enum UsageKind {
+  HIRE_SEARCH
+  COMPARE
+}
+
 enum HireSourceKind {
-  APIFY_NEW_HIRES
+  PDL
   // Reserved: nothing writes it yet.
   USER_REPORTED
 }
