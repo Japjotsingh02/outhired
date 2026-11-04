@@ -5,47 +5,52 @@ import { normalizeCompanyDomain } from "@/lib/domain";
 import { errorMessage } from "@/lib/errorMessage";
 import { getHireSearchConfig } from "@/server/env";
 import {
+  AppError,
   BadRequestError,
   ConflictError,
   ForbiddenError,
   NotFoundError,
   RateLimitedError,
+  ServiceUnavailableError,
 } from "@/server/errors";
-import { checkRateLimit } from "@/server/security/rateLimit";
 import { findFreshHireCache, saveHireCache } from "@/server/repositories/hireSearchCache.repo";
 import {
-  attachSearchRun,
   claimSearchStart,
+  countProviderSearchesSince,
   findOwnedSearchJob,
   markSearchFailed,
   setJobDomain,
   setSearchError,
   type SearchJob,
 } from "@/server/repositories/jobs.repo";
-import { createApifyNewHiresSource } from "@/server/services/hireSearch/apifyNewHires";
+import { assertCanHireSearch, recordCredits, refundUsage } from "@/server/services/billing/entitlements";
 import { ingestRecords } from "@/server/services/hireSearch/ingest";
-import { buildTitleKeywords } from "@/server/services/hireSearch/keywords";
-import type { HireRecord, HireSource } from "@/server/services/hireSearch/types";
+import { createPdlNewHiresSource } from "@/server/services/hireSearch/pdlNewHires";
+import type { HireSource, SearchInput, SearchOutcome } from "@/server/services/hireSearch/types";
 import { hireWindow } from "@/server/services/hireSearch/window";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+/** A search normally takes seconds; a job still RUNNING after this is a request that died. */
+export const STALE_RUNNING_MS = 2 * 60 * 1000;
 
 /** The one place that picks the provider: a second source is a one-file change. */
-const HIRE_SOURCE_FACTORY = createApifyNewHiresSource;
+const HIRE_SOURCE_FACTORY = createPdlNewHiresSource;
 export function getHireSource(): HireSource {
   return HIRE_SOURCE_FACTORY();
 }
 
 export interface SearchSummary {
   searchStatus: SearchJob["searchStatus"];
-  /** When the current run started; the client stops polling a few minutes after this. */
-  searchStartedAt: Date | null;
   lastSearchedAt: Date | null;
   /** Earliest time a new search is allowed; null when one is allowed now. */
   nextSearchAllowedAt: Date | null;
   candidateCount: number;
   searchError: string | null;
+  /** All matches the provider reported, including people we did not fetch or hid. */
+  searchTotalMatches: number | null;
+  /** Matches hidden because they were internal role changes at the company. */
+  searchSkippedInternal: number | null;
 }
 
 export interface SearchUser {
@@ -60,38 +65,49 @@ export interface SearchDeps {
 
 const defaultDeps = (): SearchDeps => ({ source: getHireSource(), now: () => new Date() });
 
-// Rows read back from the shared cache are validated again before use.
-const cachedRecords = z.array(
-  z.object({
-    externalId: z.string().min(1),
-    fullName: z.string().min(1),
-    title: z.string(),
-    companyName: z.string().optional(),
-    companyDomain: z.string().optional(),
-    startedMonth: z.string().regex(/^\d{4}-\d{2}$/),
-    startPrecision: z.enum(["month", "year"]),
-    previousCompany: z.string().optional(),
-    previousTitle: z.string().optional(),
-    previousEndedMonth: z.string().regex(/^\d{4}-\d{2}$/).optional(),
-    headline: z.string().optional(),
-    location: z.string().optional(),
-    countryCode: z.string().optional(),
-    profileUrl: z.string().optional(),
-    seniorityBucket: z.string().optional(),
-    sourceUpdatedAt: z.string().optional(),
-  }),
-);
+const monthString = z.string().regex(/^\d{4}-\d{2}$/);
 
-/** Same inputs always give the same key: domain | sinceMonth | sorted keywords. */
-export function hireCacheKey(domain: string, sinceMonth: string, keywords: string[]): string {
-  const material = `${domain}|${sinceMonth}|${[...keywords].sort().join(",")}`;
+// What the shared cache stores, and all it stores. Read back, it is validated again before use.
+const cachedSearch = z.object({
+  total: z.number().int().nonnegative(),
+  skippedInternal: z.number().int().nonnegative(),
+  records: z.array(
+    z.object({
+      externalId: z.string().min(1),
+      fullName: z.string().min(1),
+      title: z.string(),
+      companyName: z.string().optional(),
+      companyDomain: z.string().optional(),
+      startedMonth: monthString,
+      startPrecision: z.enum(["month", "year"]),
+      previousCompany: z.string().optional(),
+      previousTitle: z.string().optional(),
+      previousEndedMonth: monthString.optional(),
+      country: z.string().optional(),
+      profileUrl: z.string().optional(),
+      seniorityBucket: z.string().optional(),
+      confidence: z.enum(["HIGH", "MEDIUM", "LOW"]),
+      sourceUpdatedAt: z.string().optional(),
+    }),
+  ),
+});
+type CachedSearch = z.infer<typeof cachedSearch>;
+
+/** Same inputs always give the same key: source | domain | window | role filter and country. */
+export function hireCacheKey(input: {
+  source: string;
+  domain: string;
+  sinceMonth: string;
+  untilMonth: string;
+  fingerprint: string;
+}): string {
+  const material = [input.source, input.domain, input.sinceMonth, input.untilMonth, input.fingerprint].join("|");
   return createHash("sha256").update(material).digest("hex");
 }
 
-function searchInputs(job: SearchJob, domain: string) {
-  const { sinceMonth } = hireWindow(job.postedMonth);
-  const keywords = buildTitleKeywords(job.role);
-  return { domain, sinceMonth, keywords, cacheKey: hireCacheKey(domain, sinceMonth, keywords) };
+/** 00:00 UTC on the 1st of the month containing `now`. */
+export function utcMonthStart(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
 /** A failed search can be retried at once; otherwise the refresh interval applies. */
@@ -107,11 +123,12 @@ export function nextSearchAllowedAt(
 function summarize(job: SearchJob): SearchSummary {
   return {
     searchStatus: job.searchStatus,
-    searchStartedAt: job.searchStartedAt,
     lastSearchedAt: job.lastSearchedAt,
     nextSearchAllowedAt: nextSearchAllowedAt(job.lastSearchedAt, job.searchStatus),
     candidateCount: job._count.candidates,
     searchError: job.searchError,
+    searchTotalMatches: job.searchTotalMatches,
+    searchSkippedInternal: job.searchSkippedInternal,
   };
 }
 
@@ -128,11 +145,11 @@ function assertAllowed(user: SearchUser): void {
   }
 }
 
-async function readCache(cacheKey: string, now: Date): Promise<HireRecord[] | null> {
+async function readCache(cacheKey: string, now: Date): Promise<CachedSearch | null> {
   try {
     const rows = await findFreshHireCache(cacheKey, now);
     if (rows === null) return null;
-    const parsed = cachedRecords.safeParse(rows);
+    const parsed = cachedSearch.safeParse(rows);
     return parsed.success ? parsed.data : null;
   } catch (err) {
     // Cache problems must not block a search.
@@ -142,22 +159,24 @@ async function readCache(cacheKey: string, now: Date): Promise<HireRecord[] | nu
 }
 
 async function writeCache(
-  inputs: ReturnType<typeof searchInputs>,
-  records: HireRecord[],
+  cacheKey: string,
+  input: SearchInput,
+  fingerprint: string,
+  entry: CachedSearch,
   now: Date,
 ): Promise<void> {
   const config = getHireSearchConfig();
   if (config.cacheDisabled) return;
-  const ttlHours = records.length > 0 ? config.cacheTtlHours : config.emptyCacheTtlHours;
+  const ttlHours = entry.records.length > 0 ? config.cacheTtlHours : config.emptyCacheTtlHours;
   try {
     await saveHireCache(
       {
-        cacheKey: inputs.cacheKey,
-        domain: inputs.domain,
-        sinceMonth: inputs.sinceMonth,
-        keywords: inputs.keywords,
-        rows: records,
-        rowCount: records.length,
+        cacheKey,
+        domain: input.domain,
+        sinceMonth: input.sinceMonth,
+        keywords: [fingerprint],
+        rows: entry,
+        rowCount: entry.records.length,
         expiresAt: new Date(now.getTime() + ttlHours * HOUR_MS),
       },
       now,
@@ -167,9 +186,22 @@ async function writeCache(
   }
 }
 
+const BILLING_CODES = new Set(["PLAN_LIMIT_REACHED", "FREE_SEARCHES_PAUSED", "SEARCH_CAPACITY_REACHED"]);
+
+/** The short code stored on a failed job and shown to the user through getErrorMessage. */
+function failureCode(err: unknown): string {
+  if (err instanceof RateLimitedError) return err.code;
+  if (err instanceof AppError && BILLING_CODES.has(err.code)) return err.code;
+  if (err instanceof ServiceUnavailableError) return "SERVICE_UNAVAILABLE";
+  return "PROVIDER_FAILED";
+}
+
 /**
- * Starts (or short-circuits) a hire search for a job the user owns. Never waits for
- * the provider: it records the run and returns; refreshHireSearch collects results.
+ * Runs a hire search for a job the user owns and returns the final state. The whole search
+ * happens inside this call (one provider request), so there is nothing to poll. Guards run in
+ * order: ownership, domain, allowlist, a search already running, "searched recently", then the
+ * claim (so two requests cannot both search), the shared cache (a hit is free for everyone), the
+ * per-user daily limit, the plan limit and the monthly credit budget, and only then the provider.
  */
 export async function startHireSearchForJob(
   user: SearchUser,
@@ -198,11 +230,12 @@ export async function startHireSearchForJob(
 
   assertAllowed(user);
 
+  // Another request is searching this job right now: report its state, start nothing.
   const runningSince = job.searchStartedAt?.getTime();
   if (
     job.searchStatus === "RUNNING" &&
     runningSince !== undefined &&
-    now.getTime() - runningSince < config.runTimeoutMs
+    now.getTime() - runningSince < STALE_RUNNING_MS
   ) {
     return summarize(job);
   }
@@ -216,102 +249,95 @@ export async function startHireSearchForJob(
     throw new ConflictError("This job was searched recently", undefined, "SEARCH_TOO_SOON");
   }
 
-  // Claim before any paid call so two requests cannot both start a run.
-  const staleBefore = new Date(now.getTime() - config.runTimeoutMs);
+  // Claim before any paid call so two requests cannot both search. A search left RUNNING for
+  // longer than STALE_RUNNING_MS (its request died) is taken over here.
+  const staleBefore = new Date(now.getTime() - STALE_RUNNING_MS);
   if ((await claimSearchStart(job.id, now, staleBefore)) !== 1) return loadSummary(user.id, jobId);
 
-  const inputs = searchInputs(job, domain);
+  const window = hireWindow(job.postedMonth);
+  const input: SearchInput = {
+    domain,
+    sinceMonth: window.sinceMonth,
+    untilMonth: window.untilMonth,
+    role: job.role,
+    location: job.location,
+    size: config.maxResults,
+  };
+  const fingerprint = deps.source.fingerprint(input);
+  const cacheKey = hireCacheKey({ source: deps.source.kind, domain, ...window, fingerprint });
+  const completion = { jobId: job.id, startedAt: now, now };
+
   try {
     if (!config.cacheDisabled) {
-      const cached = await readCache(inputs.cacheKey, now);
+      const cached = await readCache(cacheKey, now);
       if (cached) {
-        await ingestRecords(job, cached, { jobId: job.id, expectedRunId: null, costUsd: null, now });
+        // A cache hit costs no credits and does not count against the daily limit.
+        await ingestRecords(job, cached.records, {
+          ...completion,
+          creditsUsed: null,
+          totalMatches: cached.total,
+          skippedInternal: cached.skippedInternal,
+        });
         return loadSummary(user.id, jobId);
       }
     }
 
-    // The daily limit counts provider runs only; a cache hit costs nothing.
-    const limit = await checkRateLimit(`user:${user.id}`, {
-      scope: "hire-search",
-      limit: config.dailyLimitPerUser,
-      windowMs: DAY_MS,
-    });
-    if (limit.limited) {
-      throw new RateLimitedError("Daily search limit reached", undefined, "LIMIT_REACHED", limit.retryAfterSeconds);
+    // The daily limit is counted from the database, so it holds across restarts and servers.
+    const searchesToday = await countProviderSearchesSince(user.id, new Date(now.getTime() - DAY_MS));
+    if (searchesToday >= config.dailyLimitPerUser) {
+      throw new RateLimitedError("Daily search limit reached", undefined, "DAILY_LIMIT_REACHED");
     }
+    // Plan limit, then the shared monthly credit budget; inserts the usage event.
+    const reservation = await assertCanHireSearch(user.id, job.id, now);
 
-    const runRef = await deps.source.startSearch({
-      domain: inputs.domain,
-      sinceMonth: inputs.sinceMonth,
-      keywords: inputs.keywords,
-      maxResults: config.maxResults,
+    let outcome: SearchOutcome;
+    try {
+      outcome = await deps.source.search({ ...input, size: Math.min(config.maxResults, reservation.creditsAllowed) });
+    } catch (err) {
+      // The provider returned nothing: the user keeps their search.
+      await refundUsage(reservation);
+      throw err;
+    }
+    await recordCredits(reservation, outcome.creditsUsed);
+    // The schema strips anything that is not a kept field, so the cache can never hold more.
+    const entry = cachedSearch.parse({
+      total: outcome.total,
+      skippedInternal: outcome.skippedInternal,
+      records: outcome.records,
     });
-    await attachSearchRun(job.id, runRef.runId, runRef.datasetId);
+    const written = await ingestRecords(job, outcome.records, {
+      ...completion,
+      creditsUsed: outcome.creditsUsed,
+      totalMatches: outcome.total,
+      skippedInternal: outcome.skippedInternal,
+    });
+    // Only a search that finished writes the shared cache, and failures are never cached.
+    if (written !== null) await writeCache(cacheKey, input, fingerprint, entry, now);
   } catch (err) {
     // Release the claim so the user can retry; the error still reaches the caller.
-    const code = err instanceof RateLimitedError ? "LIMIT_REACHED" : "PROVIDER_FAILED";
-    await markSearchFailed(job.id, null, code).catch(() => undefined);
-    console.error("[hireSearch] Could not start search:", errorMessage(err));
+    await markSearchFailed(job.id, now, failureCode(err)).catch(() => undefined);
+    console.error("[hireSearch] Search failed:", err instanceof AppError ? err.code : errorMessage(err));
     throw err;
   }
   return loadSummary(user.id, jobId);
 }
 
 /**
- * Checks a RUNNING search and finishes it. Safe to call repeatedly and concurrently:
- * results are ingested exactly once, and any non-RUNNING job just returns its state.
+ * The current search state for a job the user owns. A search left RUNNING past
+ * STALE_RUNNING_MS (its request died) is marked FAILED/TIMEOUT so it can be retried.
  */
 export async function refreshHireSearch(
   userId: string,
   jobId: string,
-  deps: SearchDeps = defaultDeps(),
+  deps: Pick<SearchDeps, "now"> = { now: () => new Date() },
 ): Promise<SearchSummary> {
-  const config = getHireSearchConfig();
-  const now = deps.now();
   const job = await findOwnedSearchJob(userId, jobId);
   if (!job) throw new NotFoundError("Job not found");
   if (job.searchStatus !== "RUNNING") return summarize(job);
 
   const startedAt = job.searchStartedAt?.getTime() ?? 0;
-  const timedOut = now.getTime() - startedAt > config.runTimeoutMs;
+  if (deps.now().getTime() - startedAt <= STALE_RUNNING_MS) return summarize(job);
 
-  // The run has not been recorded yet (start in progress) or never will be.
-  if (!job.searchRunId || !job.searchDatasetId) {
-    if (timedOut) await markSearchFailed(job.id, job.searchRunId, "TIMEOUT");
-    return loadSummary(userId, jobId);
-  }
-  const runRef = { runId: job.searchRunId, datasetId: job.searchDatasetId };
-
-  let result;
-  try {
-    result = await deps.source.checkSearch(runRef);
-  } catch (err) {
-    // A failed status check is transient; the next poll tries again (until the timeout).
-    console.error("[hireSearch] Status check failed:", errorMessage(err));
-    if (timedOut) await markSearchFailed(job.id, runRef.runId, "TIMEOUT");
-    return loadSummary(userId, jobId);
-  }
-
-  if (result.state === "running") {
-    if (timedOut) {
-      await deps.source.abortSearch(runRef).catch((err) => {
-        console.error("[hireSearch] Abort failed:", errorMessage(err));
-      });
-      await markSearchFailed(job.id, runRef.runId, "TIMEOUT");
-    }
-  } else if (result.state === "failed") {
-    await markSearchFailed(job.id, runRef.runId, result.reason);
-  } else if (!job.domain) {
-    await markSearchFailed(job.id, runRef.runId, "NO_DOMAIN");
-  } else {
-    const written = await ingestRecords(job, result.records, {
-      jobId: job.id,
-      expectedRunId: runRef.runId,
-      costUsd: result.costUsd,
-      now,
-    });
-    // Only the caller that finished the search writes the shared cache.
-    if (written !== null) await writeCache(searchInputs(job, job.domain), result.records, now);
-  }
+  await markSearchFailed(job.id, job.searchStartedAt, "TIMEOUT");
   return loadSummary(userId, jobId);
 }

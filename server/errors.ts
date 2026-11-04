@@ -62,7 +62,7 @@ export class UpstreamError extends AppError {
 }
 
 export class ServiceUnavailableError extends AppError {
-  constructor(message = "Service unavailable", details?: unknown) {
-    super(503, "SERVICE_UNAVAILABLE", message, details);
+  constructor(message = "Service unavailable", details?: unknown, code = "SERVICE_UNAVAILABLE") {
+    super(503, code, message, details);
   }
 }

@@ -13,13 +13,14 @@ export interface FakeJob {
   company: string;
   postedMonth: Date;
   domain: string | null;
+  location: string | null;
   searchStatus: "NOT_STARTED" | "RUNNING" | "DONE" | "FAILED";
-  searchRunId: string | null;
-  searchDatasetId: string | null;
   searchStartedAt: Date | null;
   lastSearchedAt: Date | null;
   searchError: string | null;
-  searchCostUsd: number | null;
+  searchCreditsUsed: number | null;
+  searchTotalMatches: number | null;
+  searchSkippedInternal: number | null;
 }
 
 export interface FakeCandidate {
@@ -30,7 +31,25 @@ export interface FakeCandidate {
   [key: string]: unknown;
 }
 
+export interface FakeUser {
+  id: string;
+  plan: "FREE" | "PRO";
+  planEndsAt: Date | null;
+}
+
+export interface FakeUsageEvent {
+  id: string;
+  userId: string;
+  kind: "HIRE_SEARCH" | "COMPARE";
+  jobId: string | null;
+  creditsUsed: number;
+  createdAt: Date;
+}
+
 type Where = Record<string, unknown>;
+
+const sameValue = (actual: unknown, expected: unknown) =>
+  actual instanceof Date && expected instanceof Date ? actual.getTime() === expected.getTime() : actual === expected;
 
 function matches(job: FakeJob, where: Where): boolean {
   for (const [key, expected] of Object.entries(where)) {
@@ -40,12 +59,15 @@ function matches(job: FakeJob, where: Where): boolean {
     }
     const actual = (job as unknown as Record<string, unknown>)[key];
     if (expected !== null && typeof expected === "object" && !(expected instanceof Date)) {
-      const condition = expected as { not?: unknown; lt?: Date };
-      if ("not" in condition && actual === condition.not) return false;
+      const condition = expected as { not?: unknown; lt?: Date; gte?: Date };
+      if ("not" in condition && sameValue(actual, condition.not)) return false;
       if ("lt" in condition) {
         if (!(actual instanceof Date) || !(actual.getTime() < (condition.lt as Date).getTime())) return false;
       }
-    } else if (actual !== expected) {
+      if ("gte" in condition) {
+        if (!(actual instanceof Date) || !(actual.getTime() >= (condition.gte as Date).getTime())) return false;
+      }
+    } else if (!sameValue(actual, expected)) {
       return false;
     }
   }
@@ -56,6 +78,9 @@ export function createFakeDb() {
   const jobs = new Map<string, FakeJob>();
   const candidates = new Map<string, FakeCandidate>();
   const cache = new Map<string, { cacheKey: string; rows: unknown; expiresAt: Date }>();
+  const users = new Map<string, FakeUser>();
+  const usageEvents = new Map<string, FakeUsageEvent>();
+  let eventSeq = 0;
   const counters = { candidateUpserts: 0, cacheWrites: 0 };
 
   const visibleCount = (jobId: string) =>
@@ -71,6 +96,15 @@ export function createFakeDb() {
       const job = jobs.get(where.id)!;
       Object.assign(job, data);
       return { id: job.id };
+    },
+    async count({ where }: { where: Where }) {
+      return [...jobs.values()].filter((job) => matches(job, where)).length;
+    },
+    async aggregate({ where }: { where: Where }) {
+      const sum = [...jobs.values()]
+        .filter((job) => matches(job, where))
+        .reduce((total, job) => total + (job.searchCreditsUsed ?? 0), 0);
+      return { _sum: { searchCreditsUsed: sum } };
     },
     async updateMany({ where, data }: { where: Where; data: Partial<FakeJob> }) {
       let count = 0;
@@ -121,9 +155,59 @@ export function createFakeDb() {
     },
   };
 
+  const eventMatches = (event: FakeUsageEvent, where: Where) =>
+    Object.entries(where).every(([key, expected]) => {
+      if (key === "createdAt") return event.createdAt.getTime() >= (expected as { gte: Date }).gte.getTime();
+      return (event as unknown as Record<string, unknown>)[key] === expected;
+    });
+
+  const userDelegate = {
+    // An unknown user is a FREE user, so tests that do not care about plans need no setup.
+    async findUnique({ where }: { where: { id: string } }) {
+      const user = users.get(where.id) ?? { id: where.id, plan: "FREE" as const, planEndsAt: null };
+      return { plan: user.plan, planEndsAt: user.planEndsAt };
+    },
+  };
+
+  const usageDelegate = {
+    async count({ where }: { where: Where }) {
+      return [...usageEvents.values()].filter((e) => eventMatches(e, where)).length;
+    },
+    async aggregate({ where }: { where: Where }) {
+      const sum = [...usageEvents.values()]
+        .filter((e) => eventMatches(e, where))
+        .reduce((total, e) => total + e.creditsUsed, 0);
+      return { _sum: { creditsUsed: sum } };
+    },
+    async create({ data }: { data: Omit<FakeUsageEvent, "id" | "creditsUsed"> & { createdAt?: Date } }) {
+      const id = `ue${++eventSeq}`;
+      usageEvents.set(id, { creditsUsed: 0, ...data, id, createdAt: data.createdAt ?? new Date() });
+      return { id };
+    },
+    async deleteMany({ where }: { where: { id: string } }) {
+      return { count: usageEvents.delete(where.id) ? 1 : 0 };
+    },
+    async updateMany({ where, data }: { where: { id: string }; data: Partial<FakeUsageEvent> }) {
+      const event = usageEvents.get(where.id);
+      if (event) Object.assign(event, data);
+      return { count: event ? 1 : 0 };
+    },
+  };
+
+  // Callback transactions run one at a time: that is what the user-row FOR UPDATE lock gives.
+  let queue: Promise<unknown> = Promise.resolve();
   const transaction = async (arg: unknown) => {
     if (Array.isArray(arg)) return Promise.all(arg);
-    return (arg as (tx: unknown) => Promise<unknown>)({ job: jobDelegate, candidate: candidateDelegate });
+    const tx = {
+      job: jobDelegate,
+      candidate: candidateDelegate,
+      user: userDelegate,
+      usageEvent: usageDelegate,
+      $queryRaw: async () => [],
+    };
+    const run = queue.then(() => (arg as (tx: unknown) => Promise<unknown>)(tx));
+    queue = run.catch(() => undefined);
+    return run;
   };
 
   return {
@@ -131,19 +215,30 @@ export function createFakeDb() {
     candidates,
     cache,
     counters,
+    users,
+    usageEvents,
+    addUser(id: string, plan: FakeUser["plan"] = "FREE", planEndsAt: Date | null = null): FakeUser {
+      const user = { id, plan, planEndsAt };
+      users.set(id, user);
+      return user;
+    },
+    addUsage(userId: string, kind: FakeUsageEvent["kind"], createdAt: Date, creditsUsed = 0): void {
+      usageEvents.set(`ue${++eventSeq}`, { id: `ue${eventSeq}`, userId, kind, jobId: null, creditsUsed, createdAt });
+    },
     addJob(overrides: Partial<FakeJob> & { id: string; userId: string }): FakeJob {
       const job: FakeJob = {
         role: "Senior Product Manager",
         company: "Stripe",
         postedMonth: new Date(Date.UTC(2026, 1, 1)),
         domain: "stripe.com",
+        location: null,
         searchStatus: "NOT_STARTED",
-        searchRunId: null,
-        searchDatasetId: null,
         searchStartedAt: null,
         lastSearchedAt: null,
         searchError: null,
-        searchCostUsd: null,
+        searchCreditsUsed: null,
+        searchTotalMatches: null,
+        searchSkippedInternal: null,
         ...overrides,
       };
       jobs.set(job.id, job);
@@ -157,12 +252,16 @@ export function createFakeDb() {
         job: target.job,
         candidate: target.candidate,
         hireSearchCache: target.hireSearchCache,
+        user: target.user,
+        usageEvent: target.usageEvent,
         $transaction: target.$transaction,
       };
       Object.assign(target, {
         job: jobDelegate,
         candidate: candidateDelegate,
         hireSearchCache: cacheDelegate,
+        user: userDelegate,
+        usageEvent: usageDelegate,
         $transaction: transaction,
       });
       return () => Object.assign(target, saved);

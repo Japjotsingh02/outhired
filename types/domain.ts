@@ -2,7 +2,7 @@
 export type SearchStatus = "NOT_STARTED" | "RUNNING" | "DONE" | "FAILED";
 export type MatchConfidence = "HIGH" | "MEDIUM" | "LOW";
 export interface DBCandidate {
-  id: string; jobId: string; externalId?: string | null; source: "APIFY_NEW_HIRES" | "USER_REPORTED";
+  id: string; jobId: string; externalId?: string | null; source: "PDL" | "USER_REPORTED";
   name: string; initials: string;
   title: string; headline?: string | null; linkedinUrl?: string | null; location?: string | null;
   currentCompany?: string | null; previousRole?: string | null; skills: string[];
@@ -21,7 +21,8 @@ export interface DBJob {
   location?: string | null; skills: string[]; status: "PENDING" | "REJECTED" | "INTERVIEWING";
   inputMode: "URL" | "DESCRIPTION" | "MANUAL"; postedMonth: string; // ISO date, 1st of the month (UTC)
   appliedDate: string; candidates: DBCandidate[]; createdAt: string; updatedAt: string;
-  searchStatus: SearchStatus; searchStartedAt?: string | null; lastSearchedAt?: string | null; searchError?: string | null;
+  searchStatus: SearchStatus; lastSearchedAt?: string | null; searchError?: string | null;
+  searchTotalMatches?: number | null; searchSkippedInternal?: number | null;
   nextSearchAllowedAt?: string | null; // set when "search again" is not allowed yet
 }
 export interface UserProfile {
