@@ -18,7 +18,7 @@ export default function NotFound() {
         <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5, marginBottom: 20 }}>
           The link may be old or the page may have been removed. Head back to your applications.
         </p>
-        <Link className="btn-primary" href="/" style={{ textDecoration: "none", display: "inline-block" }}>
+        <Link className="btn-primary" href="/dashboard" style={{ textDecoration: "none", display: "inline-block" }}>
           Go to dashboard
         </Link>
       </div>

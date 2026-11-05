@@ -13,6 +13,7 @@ import { fieldErrorsFromApiError, getErrorMessage } from "@/lib/apiClient";
 import { useProfile, useSaveProfile, useSkipOnboarding } from "@/lib/queries/profile";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { InlineAlert } from "@/components/ui/InlineAlert";
+import { PlanBlock } from "@/components/PlanBlock";
 import { toastError } from "@/components/ui/toast";
 
 const profileSchema = z.object({
@@ -288,7 +289,7 @@ function ProfileForm({ profile }: { profile: UserProfile }) {
   // A quick action with no place for its message: failure is a toast (the global handler redirects on 401).
   function skipForNow() {
     skipOnboarding.mutate(undefined, {
-      onSuccess: () => router.push("/"),
+      onSuccess: () => router.push("/dashboard"),
       onError: (err) => toastError(err, { retry: skipForNow }),
     });
   }
@@ -336,7 +337,7 @@ function ProfileForm({ profile }: { profile: UserProfile }) {
       {/* Page header */}
       <div style={{ marginBottom: 28 }}>
         <button
-          onClick={() => router.push("/")}
+          onClick={() => router.push("/dashboard")}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -560,6 +561,8 @@ function ProfileForm({ profile }: { profile: UserProfile }) {
         </div>
       </form>
 
+      <PlanBlock />
+
       {/* Account section */}
       <div className="card" style={{ marginTop: 8 }}>
         <p className="field-label">Account</p>
@@ -605,7 +608,7 @@ function PageShell({ children }: { children: React.ReactNode }) {
         }}
       >
         <a
-          href="/"
+          href="/dashboard"
           style={{
             display: "flex",
             alignItems: "center",
