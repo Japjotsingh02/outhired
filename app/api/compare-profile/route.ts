@@ -6,6 +6,7 @@ import { prisma } from "@/server/db";
 import { handle, readJsonBody } from "@/server/http";
 import { BadRequestError, NotFoundError } from "@/server/errors";
 import { requireCompleteProfile } from "@/server/services/profile.service";
+import { assertCanCompare, refundUsage } from "@/server/services/billing/entitlements";
 import { isUniqueViolation } from "@/lib/prismaErrors";
 
 // ─── POST /api/compare-profile ────────────────────────────────────────────────
@@ -42,35 +43,48 @@ export const POST = handle(async (req: NextRequest) => {
 
   if (!candidate.linkedinUrl) throw new BadRequestError("Candidate has no LinkedIn URL");
 
-  // ── 3. Build profile texts ──────────────────────────────────────────────────
-  const userProfileText = await resolveUserProfileText(user);
-  const candidateProfileText = await resolveCandidateProfileText(candidate);
-
-  // ── 4. Run Claude comparison ────────────────────────────────────────────────
-  const result = await compareProfiles(userProfileText, candidateProfileText, jobTitle);
-
-  // ── 5. Persist result ───────────────────────────────────────────────────────
+  // A cached analysis (step 1) is free. A new one uses the plan's Compare allowance; it is
+  // given back if nothing was produced.
+  const reservation = await assertCanCompare(userId);
   try {
-    const saved = await prisma.profileMatch.create({
-      data: {
-        userId,
-        candidateId,
-        score: result.score,
-        summary: result.summary,
-        sharedStrengths: result.sharedStrengths,
-        gaps: result.gaps,
-        advice: result.advice,
-      },
-    });
-    return NextResponse.json({ ...result, id: saved.id, cached: false });
+    return await analyse(user, candidate);
   } catch (err) {
-    if (!isUniqueViolation(err)) throw err;
-    // A concurrent request saved this pair first: return that one.
-    const existing = await prisma.profileMatch.findUnique({
-      where: { userId_candidateId: { userId, candidateId } },
-    });
-    if (!existing) throw err;
-    return NextResponse.json(cachedMatchResponse(existing));
+    await refundUsage(reservation);
+    throw err;
+  }
+
+  async function analyse(user: PrismaUser, candidate: PrismaCandidate) {
+    // ── 3. Build profile texts ──────────────────────────────────────────────────
+    const userProfileText = await resolveUserProfileText(user);
+    const candidateProfileText = await resolveCandidateProfileText(candidate);
+
+    // ── 4. Run Claude comparison ────────────────────────────────────────────────
+    const result = await compareProfiles(userProfileText, candidateProfileText, jobTitle);
+
+    // ── 5. Persist result ───────────────────────────────────────────────────────
+    try {
+      const saved = await prisma.profileMatch.create({
+        data: {
+          userId,
+          candidateId,
+          score: result.score,
+          summary: result.summary,
+          sharedStrengths: result.sharedStrengths,
+          gaps: result.gaps,
+          advice: result.advice,
+        },
+      });
+      return NextResponse.json({ ...result, id: saved.id, cached: false });
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      // A concurrent request saved this pair first: return that one.
+      const existing = await prisma.profileMatch.findUnique({
+        where: { userId_candidateId: { userId, candidateId } },
+      });
+      if (!existing) throw err;
+      await refundUsage(reservation);
+      return NextResponse.json(cachedMatchResponse(existing));
+    }
   }
 });
 
