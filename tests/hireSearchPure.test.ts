@@ -4,11 +4,8 @@ import assert from "node:assert/strict";
 import { companyDomainFromJobUrl, normalizeCompanyDomain } from "@/lib/domain";
 import { formatDay, joinedLabel } from "@/lib/hireSearch";
 import { hireWindow } from "@/server/services/hireSearch/window";
-import { buildTitleKeywords } from "@/server/services/hireSearch/keywords";
-import { parseDatasetRows } from "@/server/services/hireSearch/apifyNewHires";
 import {
   buildCandidateRows,
-  candidateConfidence,
   roleMatchScore,
   startsWithinWindow,
 } from "@/server/services/hireSearch/ingest";
@@ -85,139 +82,6 @@ test("hireWindow handles a leap-year February", () => {
   assert.deepEqual(hireWindow(month(2028, 2)), { sinceMonth: "2028-02", untilMonth: "2028-05" });
 });
 
-// ─── buildTitleKeywords ──────────────────────────────────────────────────────
-
-test("buildTitleKeywords strips seniority and level numerals", () => {
-  assert.deepEqual(buildTitleKeywords("Senior Product Manager"), ["product manager"]);
-  assert.deepEqual(buildTitleKeywords("Software Engineer II"), ["software engineer"]);
-  assert.deepEqual(buildTitleKeywords("Sr. Staff Software Engineer"), ["software engineer"]);
-});
-
-test("buildTitleKeywords expands abbreviations and phrases, up to 4", () => {
-  const swe = buildTitleKeywords("Senior SWE");
-  assert.ok(swe.includes("swe"));
-  assert.ok(swe.includes("software engineer"));
-
-  const fe = buildTitleKeywords("Front End Engineer");
-  assert.ok(fe.includes("front end engineer"));
-  assert.ok(fe.includes("frontend engineer"));
-
-  const long = buildTitleKeywords("Senior Principal Machine Learning Platform Engineer");
-  assert.ok(long.length <= 4);
-  assert.ok(long.includes("platform engineer"), "last two words");
-});
-
-test("buildTitleKeywords never returns a lone generic word", () => {
-  assert.deepEqual(buildTitleKeywords("Senior Manager"), []);
-  assert.deepEqual(buildTitleKeywords("Engineer"), []);
-  assert.deepEqual(buildTitleKeywords("Lead Developer II"), []);
-  assert.deepEqual(buildTitleKeywords(""), []);
-  assert.deepEqual(buildTitleKeywords("Senior"), []);
-  // A specific single word is fine.
-  assert.deepEqual(buildTitleKeywords("Senior Recruiter"), ["recruiter"]);
-});
-
-test("buildTitleKeywords keeps every keyword within 3-64 chars and unique", () => {
-  const keywords = buildTitleKeywords("x ".repeat(80));
-  for (const keyword of keywords) assert.ok(keyword.length >= 3 && keyword.length <= 64);
-  assert.equal(new Set(keywords).size, keywords.length);
-});
-
-// ─── Row parsing ─────────────────────────────────────────────────────────────
-
-const found = (overrides: Record<string, unknown> = {}) => ({
-  _status: "found",
-  personId: 123,
-  fullName: "Ada Lovelace",
-  jobTitle: "Product Manager",
-  companyName: "Stripe",
-  companyDomain: "stripe.com",
-  seniority: "manager",
-  startedAt: "2026-03",
-  previousCompany: "Acme",
-  previousTitle: "PM",
-  previousEndedAt: "2026-02",
-  headline: "PM at Stripe",
-  location: "London",
-  countryCode: "gb",
-  linkedinUrl: "https://www.linkedin.com/in/ada",
-  hasWorkEmail: true,
-  hasPersonalEmail: false,
-  updatedAt: "2026-04-02T10:00:00Z",
-  ...overrides,
-});
-
-test("parseDatasetRows maps a normal found row", () => {
-  const { records, notFound, invalid } = parseDatasetRows([found()]);
-  assert.equal(notFound, 0);
-  assert.equal(invalid, 0);
-  assert.deepEqual(records[0], {
-    externalId: "123",
-    fullName: "Ada Lovelace",
-    title: "Product Manager",
-    companyName: "Stripe",
-    companyDomain: "stripe.com",
-    startedMonth: "2026-03",
-    startPrecision: "month",
-    previousCompany: "Acme",
-    previousTitle: "PM",
-    previousEndedMonth: "2026-02",
-    headline: "PM at Stripe",
-    location: "London",
-    countryCode: "GB",
-    profileUrl: "https://www.linkedin.com/in/ada",
-    seniorityBucket: "manager",
-    sourceUpdatedAt: "2026-04-02",
-  });
-});
-
-test("parseDatasetRows never carries email flags or addresses", () => {
-  const { records } = parseDatasetRows([found({ email: "a@b.com", hasWorkEmail: true })]);
-  const serialized = JSON.stringify(records);
-  assert.ok(!/email/i.test(serialized));
-  assert.ok(!serialized.includes("a@b.com"));
-});
-
-test("parseDatasetRows handles a year-only start", () => {
-  const { records } = parseDatasetRows([found({ startedAt: "2026", previousEndedAt: "2025" })]);
-  assert.equal(records[0].startedMonth, "2026-01");
-  assert.equal(records[0].startPrecision, "year");
-  assert.equal(records[0].previousEndedMonth, "2025-01");
-});
-
-test("parseDatasetRows drops note rows and invalid rows, and counts them", () => {
-  const rows = [
-    { _status: "no_results", _detail: "none" },
-    { _status: "outside_window" },
-    found({ startedAt: "March 2026" }),
-    found({ startedAt: "2026-13" }),
-    found({ fullName: "" }),
-    found({ personId: undefined }),
-    null,
-    "garbage",
-    found({ personId: "p-9" }),
-  ];
-  const { records, notFound, invalid, noteStatuses } = parseDatasetRows(rows);
-  assert.equal(records.length, 1);
-  assert.equal(records[0].externalId, "p-9");
-  assert.equal(invalid, 4);
-  assert.equal(notFound, 4);
-  assert.deepEqual(noteStatuses, ["no_results", "outside_window"]);
-});
-
-test("parseDatasetRows keeps only real LinkedIn URLs", () => {
-  const evil = parseDatasetRows([found({ linkedinUrl: "javascript:alert(1)" })]).records[0];
-  assert.equal(evil.profileUrl, undefined);
-  const other = parseDatasetRows([found({ linkedinUrl: "https://evil.example/linkedin.com/x" })]).records[0];
-  assert.equal(other.profileUrl, undefined);
-});
-
-test("parseDatasetRows keeps a row whose previous job ended years before the start", () => {
-  const { records } = parseDatasetRows([found({ startedAt: "2026-03", previousEndedAt: "2022-01" })]);
-  assert.equal(records.length, 1);
-  assert.equal(records[0].previousEndedMonth, "2022-01");
-});
-
 // ─── Ingestion mapping ───────────────────────────────────────────────────────
 
 const record = (overrides: Partial<HireRecord> = {}): HireRecord => ({
@@ -226,6 +90,7 @@ const record = (overrides: Partial<HireRecord> = {}): HireRecord => ({
   title: "Product Manager",
   startedMonth: "2026-03",
   startPrecision: "month",
+  confidence: "MEDIUM",
   ...overrides,
 });
 
@@ -249,23 +114,6 @@ test("startsWithinWindow keeps year-only rows by year", () => {
   assert.equal(startsWithinWindow(yearOnly("2027"), crossing), true);
 });
 
-test("candidateConfidence rules", () => {
-  const prev = (previousEndedMonth: string | undefined) =>
-    record({ previousCompany: "Acme", previousEndedMonth, startedMonth: "2026-06" });
-  assert.equal(candidateConfidence(prev("2026-06")), "HIGH"); // same month
-  assert.equal(candidateConfidence(prev("2026-03")), "HIGH"); // 3 months before
-  assert.equal(candidateConfidence(prev("2026-02")), "MEDIUM"); // 4 months before
-  assert.equal(candidateConfidence(prev("2025-06")), "MEDIUM"); // exactly 12 months
-  assert.equal(candidateConfidence(prev("2025-05")), "LOW"); // 13 months
-  assert.equal(candidateConfidence(prev("2022-01")), "LOW"); // years before
-  assert.equal(candidateConfidence(prev(undefined)), "MEDIUM"); // end unknown
-  assert.equal(candidateConfidence(record()), "MEDIUM"); // no previous company
-  assert.equal(
-    candidateConfidence(record({ startedMonth: "2026-01", startPrecision: "year", previousCompany: "Acme", previousEndedMonth: "2025-12" })),
-    "LOW",
-  );
-});
-
 test("roleMatchScore is the share of job words found in the title", () => {
   assert.equal(roleMatchScore("Senior Product Manager", "Product Manager"), 1);
   assert.equal(roleMatchScore("Senior Product Manager", "Group Product Lead"), 0.5);
@@ -276,11 +124,11 @@ test("roleMatchScore is the share of job words found in the title", () => {
 test("buildCandidateRows filters the window, scores, grades and de-duplicates", () => {
   const job = { id: "j1", role: "Senior Product Manager", postedMonth: month(2026, 2) };
   const rows = buildCandidateRows(job, [
-    record({ externalId: "a", startedMonth: "2026-03", previousCompany: "Acme", previousEndedMonth: "2026-02" }),
+    record({ externalId: "a", startedMonth: "2026-03", previousCompany: "Acme", previousEndedMonth: "2026-02", confidence: "HIGH" }),
     record({ externalId: "b", startedMonth: "2025-12" }), // before the window
     record({ externalId: "c", startedMonth: "2026-06" }), // after the window
-    record({ externalId: "a", fullName: "Ada L.", startedMonth: "2026-04" }), // duplicate id: last wins
-    record({ externalId: "d", fullName: "Grace Hopper", title: "Designer", startedMonth: "2026-01", startPrecision: "year" }),
+    record({ externalId: "a", fullName: "Ada L.", startedMonth: "2026-04", confidence: "HIGH" }), // duplicate id: last wins
+    record({ externalId: "d", fullName: "Grace Hopper", title: "Designer", startedMonth: "2026-01", startPrecision: "year", confidence: "LOW", country: "canada" }),
   ]);
   assert.deepEqual(rows.map((row) => row.externalId).sort(), ["a", "d"]);
   const a = rows.find((row) => row.externalId === "a")!;
@@ -288,10 +136,14 @@ test("buildCandidateRows filters the window, scores, grades and de-duplicates", 
   assert.equal(a.initials, "AL");
   assert.equal(a.startedMonth.toISOString(), "2026-04-01T00:00:00.000Z");
   assert.equal(a.roleMatchScore, 1);
+  assert.equal(a.confidence, "HIGH");
+  assert.equal(a.headline, null, "no headline is stored");
   const d = rows.find((row) => row.externalId === "d")!;
   assert.equal(d.startedYearOnly, true);
   assert.equal(d.confidence, "LOW");
   assert.equal(d.roleMatchScore, 0);
+  assert.equal(d.location, "canada", "the country name goes in location");
+  assert.equal(d.countryCode, null);
 });
 
 test("buildCandidateRows is deterministic, so repeated ingestion writes the same keys", () => {
@@ -302,13 +154,21 @@ test("buildCandidateRows is deterministic, so repeated ingestion writes the same
 
 // ─── Cache key ───────────────────────────────────────────────────────────────
 
-test("hireCacheKey is stable, order-insensitive for keywords, and input-sensitive", () => {
-  const key = hireCacheKey("stripe.com", "2026-02", ["product manager", "pm"]);
+test("hireCacheKey is stable and changes with every input", () => {
+  const input = { source: "PDL", domain: "stripe.com", sinceMonth: "2026-02", untilMonth: "2026-05", fingerprint: "role:product/product_management|country:any" };
+  const key = hireCacheKey(input);
   assert.match(key, /^[0-9a-f]{64}$/);
-  assert.equal(key, hireCacheKey("stripe.com", "2026-02", ["pm", "product manager"]));
-  assert.notEqual(key, hireCacheKey("stripe.com", "2026-03", ["pm", "product manager"]));
-  assert.notEqual(key, hireCacheKey("example.com", "2026-02", ["pm", "product manager"]));
-  assert.notEqual(key, hireCacheKey("stripe.com", "2026-02", ["pm"]));
+  assert.equal(key, hireCacheKey({ ...input }));
+  for (const change of [
+    { source: "OTHER" },
+    { domain: "example.com" },
+    { sinceMonth: "2026-03" },
+    { untilMonth: "2026-06" },
+    { fingerprint: "role:product/product_management|country:india" },
+    { fingerprint: "role:engineering/software+web|country:any" },
+  ]) {
+    assert.notEqual(key, hireCacheKey({ ...input, ...change }), JSON.stringify(change));
+  }
 });
 
 // ─── Client-side formatting ──────────────────────────────────────────────────

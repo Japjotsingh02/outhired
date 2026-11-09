@@ -41,6 +41,9 @@ test("getErrorMessage maps every known code to a message that says what to do", 
     ["UNAUTHORIZED", /sign in again/i],
     ["FORBIDDEN", /access/i],
     ["FEATURE_RESTRICTED", /private beta/i],
+    ["FREE_SEARCHES_PAUSED", /free searches are full/i],
+    ["SEARCH_CAPACITY_REACHED", /temporarily unavailable/i],
+    ["PLAN_LIMIT_REACHED", /upgrade to pro/i],
     ["PROFILE_INCOMPLETE", /profile/i],
     ["RATE_LIMITED", /wait/i],
     ["NOT_FOUND", /couldn't find/i],
@@ -49,7 +52,8 @@ test("getErrorMessage maps every known code to a message that says what to do", 
     ["PROVIDER_FAILED", /try again/i],
     ["UPSTREAM_ERROR", /try again/i],
     ["TIMEOUT", /too long/i],
-    ["LIMIT_REACHED", /limit/i],
+    ["LIMIT_REACHED", /monthly search limit.*next month/i],
+    ["DAILY_LIMIT_REACHED", /today.*tomorrow/i],
     ["DOMAIN_NOT_FOUND", /website/i],
     ["SEARCH_TOO_SOON", /later/i],
     ["NETWORK", /connection/i],
@@ -76,14 +80,14 @@ test("getErrorMessage puts the wait time in a rate-limit message", () => {
 });
 
 test("getErrorMessage adds the technical message and requestId in development only", () => {
-  const err = new ApiError(502, "UPSTREAM_ERROR", "Apify returned HTTP 500", undefined, "ab12cd34");
+  const err = new ApiError(502, "UPSTREAM_ERROR", "PDL returned HTTP 500", undefined, "ab12cd34");
   env.NODE_ENV = "development";
   const dev = getErrorMessage(err);
-  assert.ok(dev.includes("Apify returned HTTP 500"));
+  assert.ok(dev.includes("PDL returned HTTP 500"));
   assert.ok(dev.includes("ab12cd34"));
   env.NODE_ENV = "production";
   const prod = getErrorMessage(err);
-  assert.ok(!prod.includes("Apify"));
+  assert.ok(!prod.includes("PDL"));
   assert.ok(!prod.includes("ab12cd34"));
 });
 

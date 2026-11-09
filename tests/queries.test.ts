@@ -4,17 +4,6 @@ import { ApiError, apiFetch, getErrorMessage, isAbortError, redirectIfAuthExpire
 import { withVote } from "@/lib/helpers";
 import { queryKeys } from "@/lib/queries/keys";
 import { MAX_RETRIES, retryDelay, shouldRetry } from "@/lib/queries/retry";
-import {
-  POLL_INTERVAL_MS,
-  POLL_WINDOW_MS,
-  TROUBLE_AFTER_FAILURES,
-  hireSearchRefetchInterval,
-  isHavingTrouble,
-  isoToMs,
-  nextFailureCount,
-  pollingExpired,
-  type HireSearchSummary,
-} from "@/lib/queries/hireSearchPolling";
 import { handleGlobalError } from "@/lib/queries/globalError";
 import { handle } from "@/server/http";
 import { RateLimitedError } from "@/server/errors";
@@ -55,62 +44,6 @@ test("shouldRetry retries network failures and 5xx exactly twice", () => {
 
 test("retryDelay backs off exponentially up to a cap", () => {
   assert.deepEqual([0, 1, 2, 3, 4, 10].map(retryDelay), [1000, 2000, 4000, 8000, 8000, 8000]);
-});
-
-/* ── hire search polling ─────────────────────────────────────────────────── */
-
-const NOW = Date.UTC(2026, 10, 5, 12, 0, 0);
-const iso = (ms: number) => new Date(ms).toISOString();
-const summary = (searchStatus: HireSearchSummary["searchStatus"], startedMsAgo: number | null): HireSearchSummary => ({
-  searchStatus,
-  searchStartedAt: startedMsAgo === null ? null : iso(NOW - startedMsAgo),
-  lastSearchedAt: null,
-  nextSearchAllowedAt: null,
-  candidateCount: 0,
-  searchError: null,
-});
-
-test("refetchInterval polls every 3 s while RUNNING inside the window", () => {
-  assert.equal(hireSearchRefetchInterval(summary("RUNNING", 5_000), NOW), POLL_INTERVAL_MS);
-  assert.equal(hireSearchRefetchInterval(summary("RUNNING", POLL_WINDOW_MS - 1), NOW), POLL_INTERVAL_MS);
-  // Started time not known yet (the claim is still being written): keep polling.
-  assert.equal(hireSearchRefetchInterval(summary("RUNNING", null), NOW), POLL_INTERVAL_MS);
-});
-
-test("refetchInterval is off for DONE, FAILED, NOT_STARTED, no data, and past the window", () => {
-  assert.equal(hireSearchRefetchInterval(summary("DONE", 5_000), NOW), false);
-  assert.equal(hireSearchRefetchInterval(summary("FAILED", 5_000), NOW), false);
-  assert.equal(hireSearchRefetchInterval(summary("NOT_STARTED", null), NOW), false);
-  assert.equal(hireSearchRefetchInterval(undefined, NOW), false);
-  assert.equal(hireSearchRefetchInterval(summary("RUNNING", POLL_WINDOW_MS), NOW), false);
-  assert.equal(hireSearchRefetchInterval(summary("RUNNING", POLL_WINDOW_MS + 60_000), NOW), false);
-});
-
-test("Check again gives polling a fresh window", () => {
-  const old = summary("RUNNING", POLL_WINDOW_MS + 60_000);
-  assert.equal(pollingExpired(old, NOW, null), true);
-  assert.equal(pollingExpired(old, NOW, NOW - 1_000), false);
-  assert.equal(hireSearchRefetchInterval(old, NOW, NOW - 1_000), POLL_INTERVAL_MS);
-  assert.equal(hireSearchRefetchInterval(old, NOW + POLL_WINDOW_MS, NOW - 1_000), false);
-});
-
-test("isoToMs reads our UTC timestamps without Date parsing and rejects anything else", () => {
-  assert.equal(isoToMs("2026-11-05T12:00:00.000Z"), NOW);
-  assert.equal(isoToMs("2026-11-05T12:00:00Z"), NOW);
-  assert.equal(isoToMs("2026-11-05"), null);
-  assert.equal(isoToMs("garbage"), null);
-  assert.equal(isoToMs(null), null);
-});
-
-test("trouble shows only after 3 failures in a row, and a success resets the count", () => {
-  let count = 0;
-  const seen: boolean[] = [];
-  for (const event of ["error", "error", "success", "error", "error", "error", "error", "success"] as const) {
-    count = nextFailureCount(count, event);
-    seen.push(isHavingTrouble(count));
-  }
-  assert.deepEqual(seen, [false, false, false, false, false, true, true, false]);
-  assert.equal(TROUBLE_AFTER_FAILURES, 3);
 });
 
 /* ── keys ────────────────────────────────────────────────────────────────── */
