@@ -29,7 +29,7 @@ before(async () => {
 beforeEach(async () => {
   db = createFakeDb();
   restore = await db.install();
-  db.addUser("u1", "PRO"); // plan limits have their own tests (entitlements.test.ts)
+  db.addUser("u1", "PRO"); // plan limits have their own tests (credits.test.ts)
   for (const key of ENV_KEYS) delete process.env[key];
   (process.env as Record<string, string>).NODE_ENV = "test";
   console.error = () => undefined;
@@ -245,7 +245,7 @@ test("daily limit: searches older than a day and other users' searches do not co
 test("monthly budget: a free user is paused before the provider is called", async () => {
   process.env.PDL_MONTHLY_CREDIT_BUDGET = "10";
   db.addUser("u1", "FREE");
-  db.addUsage("u2", "HIRE_SEARCH", later(-HOUR), 10);
+  db.addUsage("u2", "HIRE_SEARCH", later(-HOUR), { pdlRecords: 10 });
   db.addJob({ id: "j1", userId: "u1" });
   const source = new FakeSource();
 
@@ -261,8 +261,8 @@ test("monthly budget: a free user is paused before the provider is called", asyn
 test("monthly budget: the page size shrinks to what is left, and last month's credits do not count", async () => {
   process.env.PDL_MONTHLY_CREDIT_BUDGET = "10";
   db.addUser("u1", "FREE");
-  db.addUsage("u2", "HIRE_SEARCH", new Date(Date.UTC(2026, 4, 31, 23, 0, 0)), 99);
-  db.addUsage("u2", "HIRE_SEARCH", later(-HOUR), 7);
+  db.addUsage("u2", "HIRE_SEARCH", new Date(Date.UTC(2026, 4, 31, 23, 0, 0)), { pdlRecords: 99 });
+  db.addUsage("u2", "HIRE_SEARCH", later(-HOUR), { pdlRecords: 7 });
   db.addJob({ id: "j1", userId: "u1" });
   const source = new FakeSource();
   await start(source);
@@ -403,7 +403,7 @@ test("cache: a second job with the same inputs is served from the cache with no 
   assert.equal(summary.searchTotalMatches, 9);
   assert.equal(summary.searchSkippedInternal, 1);
   assert.equal(source.calls.length, 1, "no second provider call");
-  assert.equal(db.jobs.get("j2")!.searchCreditsUsed, null, "a cache hit costs no credits");
+  assert.equal(db.jobs.get("j2")!.searchCreditsUsed, null, "stored results record no provider records");
 });
 
 test("cache: a cache hit does not count against the daily limit", async () => {
