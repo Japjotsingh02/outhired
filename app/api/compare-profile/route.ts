@@ -1,12 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionOrThrow } from "@/server/security/auth";
 import { compareProfiles } from "@/lib/claude";
-import { scrapeLinkedInProfile, formatProxycurlForComparison } from "@/lib/proxycurl";
+import {
+  scrapeLinkedInProfile,
+  formatProxycurlForComparison,
+} from "@/lib/proxycurl";
 import { prisma } from "@/server/db";
 import { handle, readJsonBody } from "@/server/http";
-import { BadRequestError, NotFoundError } from "@/server/errors";
+import {
+  BadRequestError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/errors";
+import { isCandidateUnlocked } from "@/server/repositories/usage.repo";
 import { requireCompleteProfile } from "@/server/services/profile.service";
-import { assertCanCompare, refundUsage } from "@/server/services/billing/entitlements";
+import {
+  assertCanCompare,
+  refundUsage,
+} from "@/server/services/billing/credits";
 import { isUniqueViolation } from "@/lib/prismaErrors";
 
 // ─── POST /api/compare-profile ────────────────────────────────────────────────
@@ -23,7 +34,17 @@ export const POST = handle(async (req: NextRequest) => {
     jobTitle: string;
   };
 
-  if (!candidateId || !jobTitle) throw new BadRequestError("candidateId and jobTitle required");
+  if (!candidateId || !jobTitle)
+    throw new BadRequestError("candidateId and jobTitle required");
+
+  // Compare works on people the user has unlocked, never on locked ones.
+  if (!(await isCandidateUnlocked(userId, candidateId))) {
+    throw new ForbiddenError(
+      "Unlock this person first",
+      undefined,
+      "CANDIDATE_LOCKED",
+    );
+  }
 
   // ── 1. Return cached result if available ────────────────────────────────────
   // One analysis per (user, candidate) pair — enforced by a unique constraint.
@@ -39,9 +60,11 @@ export const POST = handle(async (req: NextRequest) => {
     prisma.candidate.findUnique({ where: { id: candidateId } }),
   ]);
 
-  if (!user || !candidate) throw new NotFoundError("User or candidate not found");
+  if (!user || !candidate)
+    throw new NotFoundError("User or candidate not found");
 
-  if (!candidate.linkedinUrl) throw new BadRequestError("Candidate has no LinkedIn URL");
+  if (!candidate.linkedinUrl)
+    throw new BadRequestError("Candidate has no LinkedIn URL");
 
   // A cached analysis (step 1) is free. A new one uses the plan's Compare allowance; it is
   // given back if nothing was produced.
@@ -59,7 +82,11 @@ export const POST = handle(async (req: NextRequest) => {
     const candidateProfileText = await resolveCandidateProfileText(candidate);
 
     // ── 4. Run Claude comparison ────────────────────────────────────────────────
-    const result = await compareProfiles(userProfileText, candidateProfileText, jobTitle);
+    const result = await compareProfiles(
+      userProfileText,
+      candidateProfileText,
+      jobTitle,
+    );
 
     // ── 5. Persist result ───────────────────────────────────────────────────────
     try {
@@ -107,7 +134,9 @@ function cachedMatchResponse(match: {
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
-type PrismaUser = NonNullable<Awaited<ReturnType<typeof prisma.user.findUnique>>>;
+type PrismaUser = NonNullable<
+  Awaited<ReturnType<typeof prisma.user.findUnique>>
+>;
 type PrismaCandidate = NonNullable<
   Awaited<ReturnType<typeof prisma.candidate.findUnique>>
 >;
@@ -128,11 +157,15 @@ async function resolveUserProfileText(user: PrismaUser): Promise<string> {
 }
 
 /** Builds a text representation of the candidate, caching Proxycurl data on the way. */
-async function resolveCandidateProfileText(candidate: PrismaCandidate): Promise<string> {
+async function resolveCandidateProfileText(
+  candidate: PrismaCandidate,
+): Promise<string> {
   // Use existing cached LinkedIn data if present
   if (candidate.linkedinData) {
     return formatProxycurlForComparison(
-      candidate.linkedinData as Parameters<typeof formatProxycurlForComparison>[0],
+      candidate.linkedinData as Parameters<
+        typeof formatProxycurlForComparison
+      >[0],
     );
   }
 
@@ -150,7 +183,8 @@ async function resolveCandidateProfileText(candidate: PrismaCandidate): Promise<
 
   // Fallback to structured DB fields
   const lines = [`Name: ${candidate.name}`, `Title: ${candidate.title}`];
-  if (candidate.skills.length > 0) lines.push(`Skills: ${candidate.skills.join(", ")}`);
+  if (candidate.skills.length > 0)
+    lines.push(`Skills: ${candidate.skills.join(", ")}`);
   if (candidate.previousRole) lines.push(`Previous: ${candidate.previousRole}`);
   return lines.join("\n");
 }
