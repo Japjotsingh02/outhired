@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { enrichApolloPeople, fuzzyFilterByTitle, searchApolloPeople, shapePerson } from "@/lib/apollo";
 import { getApolloKey } from "@/lib/apolloClient";
+import { errorMessage } from "@/lib/errorMessage";
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
       page,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Apollo search failed";
+    const message = errorMessage(err, "Apollo search failed");
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

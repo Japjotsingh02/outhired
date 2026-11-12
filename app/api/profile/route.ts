@@ -1,70 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/server/security/authOptions";
-import { prisma } from "@/server/db";
+import { handle, readJsonBody } from "@/server/http";
+import { getSessionOrThrow } from "@/server/security/auth";
+import { getProfileView, updateProfileView } from "@/server/services/profile.service";
+import { profileUpdateSchema } from "@/lib/schemas/profile";
 
-// GET /api/profile — fetch current user's profile
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+// GET /api/profile — profile plus profileComplete, missing and onboarded
+export const GET = handle(async () => {
+  const { id } = await getSessionOrThrow();
+  return NextResponse.json(await getProfileView(id));
+});
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      linkedinUrl: true,
-      resumeText: true,
-      skills: true,
-      experienceYrs: true,
-      headline: true,
-    },
-  });
+// PUT /api/profile — update profile (also onboards the user); same shape as GET
+export const PUT = handle(async (req: NextRequest) => {
+  const { id } = await getSessionOrThrow();
 
-  return NextResponse.json(user);
-}
+  // A ZodError here becomes a 400 with the issue list (see handle()).
+  const data = profileUpdateSchema.parse(await readJsonBody(req));
 
-// PUT /api/profile — update profile
-export async function PUT(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const body = await req.json();
-  const { linkedinUrl, resumeText, skills, experienceYrs, headline, name } = body as {
-    linkedinUrl?: string;
-    resumeText?: string;
-    skills?: string[];
-    experienceYrs?: number;
-    headline?: string;
-    name?: string;
-  };
-
-  const updated = await prisma.user.update({
-    where: { id: session.user.id },
-    data: {
-      ...(name && { name }),
-      ...(linkedinUrl !== undefined && { linkedinUrl }),
-      ...(resumeText !== undefined && { resumeText }),
-      ...(skills !== undefined && { skills }),
-      ...(experienceYrs !== undefined && { experienceYrs }),
-      ...(headline !== undefined && { headline }),
-    },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      linkedinUrl: true,
-      resumeText: true,
-      skills: true,
-      experienceYrs: true,
-      headline: true,
-    },
-  });
-
-  return NextResponse.json(updated);
-}
+  return NextResponse.json(await updateProfileView(id, data));
+});

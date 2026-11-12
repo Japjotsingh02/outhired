@@ -1,31 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/server/security/authOptions";
+import { handle, readJsonBody } from "@/server/http";
+import { BadRequestError, UpstreamError } from "@/server/errors";
+import { getSessionOrThrow } from "@/server/security/auth";
 import { scrapeLinkedInProfile, formatProxycurlForComparison } from "@/lib/proxycurl";
 
-export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+export const POST = handle(async (req: NextRequest) => {
+  await getSessionOrThrow();
 
-  const body = await req.json();
-  const { linkedin_url } = body as { linkedin_url: string };
+  const body = await readJsonBody(req);
+  const { linkedin_url } = (body ?? {}) as { linkedin_url: string };
 
-  if (!linkedin_url) {
-    return NextResponse.json({ error: "linkedin_url is required" }, { status: 400 });
-  }
+  if (!linkedin_url) throw new BadRequestError("linkedin_url is required");
 
   const profile = await scrapeLinkedInProfile(linkedin_url);
   if (!profile) {
-    return NextResponse.json(
-      { error: "Could not scrape LinkedIn profile. Check PROXYCURL_API_KEY or the URL." },
-      { status: 502 },
-    );
+    throw new UpstreamError("Could not scrape LinkedIn profile. Check PROXYCURL_API_KEY or the URL.");
   }
 
   return NextResponse.json({
     profile,
     formatted: formatProxycurlForComparison(profile),
   });
-}
+});

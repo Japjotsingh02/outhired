@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/server/security/authOptions";
+import { handle, readJsonBody } from "@/server/http";
+import { getSessionOrThrow } from "@/server/security/auth";
 import { prisma } from "@/server/db";
-import { seedCandidatesFromApollo, JOB_WITH_CANDIDATES_INCLUDE } from "@/server/services/candidates";
+import { JOB_WITH_CANDIDATES_INCLUDE } from "@/server/repositories/jobs.repo";
+import { nextSearchAllowedAt, startHireSearchForJob } from "@/server/services/hireSearch";
+import { AppError } from "@/server/errors";
 import { CreateJobSchema } from "@/lib/schemas";
 import { parseYearMonth, postedMonthToDate } from "@/lib/postedMonth";
 import { seniorityFromRole } from "@/server/services/seniority";
@@ -10,56 +12,34 @@ import { isUniqueViolation } from "@/lib/prismaErrors";
 
 // ─── GET /api/jobs ────────────────────────────────────────────────────────────
 // Returns all tracked jobs (with candidates + votes) for the logged-in user.
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+export const GET = handle(async () => {
+  const { id: userId } = await getSessionOrThrow();
 
   const jobs = await prisma.job.findMany({
-    where: { userId: session.user.id },
+    where: { userId },
     include: JOB_WITH_CANDIDATES_INCLUDE,
     orderBy: { createdAt: "desc" },
   });
 
-  return NextResponse.json(jobs);
-}
+  return NextResponse.json(
+    jobs.map((job) => ({
+      ...job,
+      nextSearchAllowedAt: nextSearchAllowedAt(job.lastSearchedAt, job.searchStatus),
+    })),
+  );
+});
 
 // ─── POST /api/jobs ───────────────────────────────────────────────────────────
 // Creates a new tracked job, then fires an Apollo search to seed candidates.
-export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+export const POST = handle(async (req: NextRequest) => {
+  const { id: userId, email } = await getSessionOrThrow();
 
-  let raw: unknown;
-  try {
-    raw = await req.json();
-  } catch (err) {
-    console.error("[jobs/POST] Invalid JSON body:", err instanceof Error ? err.message : err);
-    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
-  }
-
-  const parsedBody = CreateJobSchema.safeParse(raw);
-  if (!parsedBody.success) {
-    return NextResponse.json(
-      {
-        error: "Invalid request",
-        issues: parsedBody.error.issues.map((issue) => ({
-          path: issue.path.join("."),
-          message: issue.message,
-        })),
-      },
-      { status: 400 },
-    );
-  }
-  const body = parsedBody.data;
+  // A ZodError here becomes a 400 with the issue list (see handle()).
+  const body = CreateJobSchema.parse(await readJsonBody(req));
 
   // datePosted is "YYYY-MM-01" (validated); store the 1st of the month at UTC midnight.
   const postedMonth = postedMonthToDate(parseYearMonth(body.datePosted)!);
   const { company, role } = body;
-  const userId = session.user.id;
 
   let job;
   try {
@@ -73,6 +53,7 @@ export async function POST(req: NextRequest) {
         // Never trust a client-supplied seniority: derive it from the role.
         seniority: seniorityFromRole(role),
         location: body.location || null,
+        domain: body.domain ?? null,
         skills: body.skills,
         inputMode: body.inputMode,
         postedMonth,
@@ -89,11 +70,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(existing, { status: 200 });
   }
 
-  // Apollo search is best-effort — a failure must not block the job creation.
-  try {
-    await seedCandidatesFromApollo(job.id, company, role, postedMonth);
-  } catch (err) {
-    console.error("[jobs/POST] Apollo seed failed:", err);
+  // Hire discovery is best-effort: the job is already saved, so a search that cannot
+  // start (private beta, no token, daily limit) is reported by code, not as a failure.
+  let searchStartError: string | null = null;
+  if (body.domain) {
+    try {
+      await startHireSearchForJob({ id: userId, email }, job.id);
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      searchStartError = err.code;
+    }
   }
 
   const jobWithCandidates = await prisma.job.findUnique({
@@ -101,5 +87,10 @@ export async function POST(req: NextRequest) {
     include: JOB_WITH_CANDIDATES_INCLUDE,
   });
 
-  return NextResponse.json(jobWithCandidates, { status: 201 });
-}
+  return NextResponse.json(
+    jobWithCandidates && searchStartError
+      ? { ...jobWithCandidates, searchError: searchStartError }
+      : jobWithCandidates,
+    { status: 201 },
+  );
+});
