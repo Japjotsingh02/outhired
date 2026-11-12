@@ -1,16 +1,24 @@
 "use client";
 
-import { useState, useEffect, KeyboardEvent } from "react";
+import { Suspense, useState, useEffect, KeyboardEvent } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { signOut, useSession } from "next-auth/react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { UserProfile } from "@/types";
 import { FieldError } from "@/components/ui";
+import { isProfileComplete } from "@/lib/profile";
+import { fieldErrorsFromApiError, getErrorMessage } from "@/lib/apiClient";
+import { useProfile, useSaveProfile, useSkipOnboarding } from "@/lib/queries/profile";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { toastError } from "@/components/ui/toast";
 
 const profileSchema = z.object({
   linkedinUrl: z.union([z.literal(""), z.url("Enter a full URL, e.g. https://linkedin.com/in/yourname")]),
+  githubUrl: z.union([z.literal(""), z.url("Enter a full URL, e.g. https://github.com/yourname")]),
+  portfolioUrl: z.union([z.literal(""), z.url("Enter a full URL, e.g. https://yourname.dev")]),
   headline: z.string(),
   resumeText: z.string(),
   experienceYrs: z
@@ -190,86 +198,135 @@ function SkillsInput({
 
 /* ─── Profile page ───────────────────────────────────────────────────────── */
 export default function ProfilePage() {
-  const { data: session, status } = useSession();
+  // useSearchParams needs a Suspense boundary during the production build.
+  return (
+    <Suspense fallback={null}>
+      <ProfileContent />
+    </Suspense>
+  );
+}
+
+/** Loads the profile (a failure is an error state with Retry, never an empty form), then shows the form. */
+function ProfileContent() {
+  const { status } = useSession();
   const router = useRouter();
-
-  const [loading, setLoading] = useState(true);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState("");
-
-  const {
-    register,
-    handleSubmit,
-    reset,
-    control,
-    formState: { errors, isSubmitting },
-  } = useForm<ProfileValues>({
-    resolver: zodResolver(profileSchema),
-    defaultValues: { linkedinUrl: "", headline: "", resumeText: "", experienceYrs: "", skills: [] },
-  });
-  const resumeLength = useWatch({ control, name: "resumeText" }).length;
+  const profileQuery = useProfile();
 
   // Redirect if not authed
   useEffect(() => {
     if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
 
-  // Load profile
-  useEffect(() => {
-    if (status !== "authenticated") return;
-    fetch("/api/profile")
-      .then((r) => r.json())
-      .then((p: UserProfile) => {
-        reset({
-          linkedinUrl: p.linkedinUrl ?? "",
-          headline: p.headline ?? "",
-          resumeText: p.resumeText ?? "",
-          experienceYrs: p.experienceYrs?.toString() ?? "",
-          skills: p.skills ?? [],
-        });
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error("[profile] Failed to load profile:", err);
-        setLoading(false);
-      });
-  }, [status, reset]);
+  if (status === "loading" || (status === "authenticated" && profileQuery.isPending)) {
+    return (
+      <PageShell>
+        <ProfileSkeleton />
+      </PageShell>
+    );
+  }
+
+  if (profileQuery.isError && profileQuery.data === undefined) {
+    return (
+      <PageShell>
+        <ErrorState
+          title="We couldn't load your profile"
+          message={getErrorMessage(profileQuery.error)}
+          onRetry={() => void profileQuery.refetch()}
+        />
+      </PageShell>
+    );
+  }
+
+  if (!profileQuery.data) return null;
+
+  // The form takes its starting values from the loaded profile once; later cache updates never overwrite typing.
+  return <ProfileForm profile={profileQuery.data} />;
+}
+
+function ProfileForm({ profile }: { profile: UserProfile }) {
+  const { data: session } = useSession();
+  const router = useRouter();
+  const savedProfile = useSaveProfile();
+  const skipOnboarding = useSkipOnboarding();
+
+  const [saved, setSaved] = useState(false);
+  const welcomeParam = useSearchParams().get("welcome") === "1";
+  // Welcome header: shown on ?welcome=1 or while the user has never been onboarded (decided when the form opens).
+  const [showWelcome] = useState(() => welcomeParam || profile.onboarded === false);
+  const skipping = skipOnboarding.isPending;
+  const [error, setError] = useState("");
+
+  const {
+    register,
+    handleSubmit,
+    control,
+    setError: setFieldError,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<ProfileValues>({
+    resolver: zodResolver(profileSchema),
+    defaultValues: {
+      linkedinUrl: profile.linkedinUrl ?? "",
+      githubUrl: profile.githubUrl ?? "",
+      portfolioUrl: profile.portfolioUrl ?? "",
+      headline: profile.headline ?? "",
+      resumeText: profile.resumeText ?? "",
+      experienceYrs: profile.experienceYrs?.toString() ?? "",
+      skills: profile.skills ?? [],
+    },
+  });
+  const resumeText = useWatch({ control, name: "resumeText" });
+  const resumeLength = resumeText.length;
+  const linkedinUrlValue = useWatch({ control, name: "linkedinUrl" });
+  const skillsValue = useWatch({ control, name: "skills" });
+  const profileComplete = isProfileComplete({
+    linkedinUrl: linkedinUrlValue,
+    resumeText,
+    skills: skillsValue,
+  });
+
+  // A quick action with no place for its message: failure is a toast (the global handler redirects on 401).
+  function skipForNow() {
+    skipOnboarding.mutate(undefined, {
+      onSuccess: () => router.push("/"),
+      onError: (err) => toastError(err, { retry: skipForNow }),
+    });
+  }
 
   async function onSubmit(values: ProfileValues) {
     setError("");
     setSaved(false);
 
     try {
-      const res = await fetch("/api/profile", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          linkedinUrl: values.linkedinUrl || null,
-          headline: values.headline || null,
-          resumeText: values.resumeText || null,
-          skills: values.skills,
-          experienceYrs: values.experienceYrs ? parseFloat(values.experienceYrs) : null,
-        }),
+      const updated = await savedProfile.mutateAsync({
+        linkedinUrl: values.linkedinUrl || null,
+        githubUrl: values.githubUrl || null,
+        portfolioUrl: values.portfolioUrl || null,
+        headline: values.headline || null,
+        resumeText: values.resumeText || null,
+        skills: values.skills,
+        experienceYrs: values.experienceYrs ? parseFloat(values.experienceYrs) : null,
       });
 
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error ?? "Failed to save profile");
-      }
-
+      // The server stores a normalised LinkedIn URL; reflect it in the field.
+      setValue("linkedinUrl", updated.linkedinUrl ?? "");
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      // Server-side validation errors go next to the matching fields; the input is kept.
+      const unplaced: string[] = [];
+      const fields = fieldErrorsFromApiError(err);
+      for (const [path, message] of Object.entries(fields)) {
+        const field = path.split(".")[0] as keyof ProfileValues;
+        if (field in profileSchema.shape) {
+          setFieldError(field, { type: "server", message });
+        } else {
+          unplaced.push(message);
+        }
+      }
+      if (Object.keys(fields).length > 0 && unplaced.length === 0) return;
+      setError(unplaced[0] ?? getErrorMessage(err));
     }
-  }
-
-  if (status === "loading" || loading) {
-    return (
-      <PageShell>
-        <ProfileSkeleton />
-      </PageShell>
-    );
   }
 
   if (!session) return null;
@@ -295,6 +352,40 @@ export default function ProfilePage() {
         >
           ← Back to dashboard
         </button>
+
+        {showWelcome && (
+          <div
+            className="card"
+            style={{
+              marginBottom: 20,
+              padding: 20,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+            }}
+          >
+            <div>
+              <p className="eyebrow" style={{ marginBottom: 6 }}>Welcome to OutHired</p>
+              <h2 className="editorial" style={{ fontSize: 22, lineHeight: 1.2, marginBottom: 6 }}>
+                Tell us about you.
+              </h2>
+              <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+                You can compare yourself with candidates once this is filled in.
+              </p>
+            </div>
+            <button
+              id="skip-onboarding"
+              type="button"
+              className="btn-ghost"
+              onClick={() => void skipForNow()}
+              disabled={skipping}
+              style={{ flexShrink: 0 }}
+            >
+              {skipping ? "Skipping…" : "Skip for now"}
+            </button>
+          </div>
+        )}
 
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           {/* Avatar */}
@@ -345,6 +436,30 @@ export default function ProfilePage() {
             <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5 }}>
               Used to build a fuller baseline for profile comparisons
             </p>
+          </div>
+
+          <div>
+            <FieldLabel htmlFor="github-url">GitHub Profile URL</FieldLabel>
+            <input
+              id="github-url"
+              className="input"
+              type="url"
+              placeholder="https://github.com/yourname"
+              {...register("githubUrl")}
+            />
+            <FieldError message={errors.githubUrl?.message} />
+          </div>
+
+          <div>
+            <FieldLabel htmlFor="portfolio-url">Portfolio URL</FieldLabel>
+            <input
+              id="portfolio-url"
+              className="input"
+              type="url"
+              placeholder="https://yourname.dev"
+              {...register("portfolioUrl")}
+            />
+            <FieldError message={errors.portfolioUrl?.message} />
           </div>
 
           <div>
@@ -409,20 +524,7 @@ export default function ProfilePage() {
         </Section>
 
         {/* Error */}
-        {error && (
-          <div
-            style={{
-              padding: "12px 16px",
-              borderRadius: 12,
-              background: "rgba(239,68,68,0.08)",
-              border: "1px solid rgba(239,68,68,0.2)",
-              color: "#F87171",
-              fontSize: 13,
-            }}
-          >
-            {error}
-          </div>
-        )}
+        {error && <InlineAlert>{error}</InlineAlert>}
 
         {/* Save bar */}
         <div
@@ -441,7 +543,9 @@ export default function ProfilePage() {
             {saved ? (
               <span style={{ color: "#4ADE80" }}>✓ Profile saved</span>
             ) : (
-              "Your profile stays private by default"
+              profileComplete
+                ? "Profile complete · stays private by default"
+                : "Add a LinkedIn URL or resume, and at least 3 skills, to complete your profile"
             )}
           </p>
           <button
@@ -457,34 +561,16 @@ export default function ProfilePage() {
       </form>
 
       {/* Account section */}
-      <div
-        className="card"
-        style={{
-          marginTop: 8,
-          borderRadius: 16,
-          padding: 20,
-          borderColor: "rgba(239,68,68,0.15)",
-          background: "rgba(239,68,68,0.03)",
-        }}
-      >
-        <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Account</p>
+      <div className="card" style={{ marginTop: 8 }}>
+        <p className="field-label">Account</p>
         <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 14 }}>
           Signed in as <strong style={{ color: "var(--text-primary)" }}>{session.user.email}</strong>
         </p>
         <button
-          onClick={() =>
-            (window.location.href =
-              "/api/auth/signout?callbackUrl=/login")
-          }
-          style={{
-            fontSize: 13,
-            padding: "8px 18px",
-            borderRadius: 8,
-            background: "rgba(239,68,68,0.08)",
-            border: "1px solid rgba(239,68,68,0.2)",
-            color: "#F87171",
-            cursor: "pointer",
-          }}
+          type="button"
+          className="btn-ghost"
+          onClick={() => void signOut({ callbackUrl: "/login" })}
+          style={{ color: "var(--red)", borderColor: "var(--red)" }}
         >
           Sign out
         </button>

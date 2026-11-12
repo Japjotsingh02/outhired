@@ -11,12 +11,19 @@ import { Sidebar } from "@/components/Sidebar";
 import { CandidateList } from "@/components/CandidateList";
 import { CandidateDetail } from "@/components/CandidateDetail";
 import { GapAnalysis } from "@/components/GapAnalysis";
-import { ApolloLogPanel } from "@/components/ApolloLogPanel";
+import { SearchLogPanel } from "@/components/SearchLogPanel";
+import { HireSearchPanel } from "@/components/HireSearchPanel";
 import { DashboardOverview } from "@/components/DashboardOverview";
 import { ApplicationsOverview } from "@/components/ApplicationsOverview";
+import { CompareProfilePrompt } from "@/components/CompareProfilePrompt";
 
-import { DBJob, DBCandidate, UserProfile } from "@/types";
+import { DBJob, DBCandidate } from "@/types";
 import { sortCandidatesByVotes } from "@/lib/helpers";
+import { getErrorMessage } from "@/lib/apiClient";
+import { useJobs, useVote } from "@/lib/queries/jobs";
+import { useProfile } from "@/lib/queries/profile";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 import { STATUS_STYLE, TAB_LABELS } from "@/constants";
 
 type ActiveTab = "candidates" | "gap" | "log";
@@ -29,6 +36,8 @@ interface WorkspaceProps {
   initialCandidateId?: string;
   initialCompareCandidateId?: string;
 }
+
+const NO_JOBS: DBJob[] = [];
 
 function LoadingScreen() {
   return (
@@ -179,10 +188,20 @@ export function Workspace({
   const { data: session, status } = useSession();
   const router = useRouter();
 
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [profileLoading, setProfileLoading] = useState(true);
-  const [jobs, setJobs] = useState<DBJob[]>([]);
-  const [jobsLoading, setJobsLoading] = useState(true);
+  // A failed request is an error state, never "no profile" / "no jobs".
+  const profileQuery = useProfile();
+  // Jobs load for every authenticated user, with or without a complete profile.
+  const jobsQuery = useJobs();
+  const vote = useVote();
+  const profile = profileQuery.data;
+  const profileLoading = profileQuery.isPending;
+  const profileError = profileQuery.isError;
+  const jobs = jobsQuery.data ?? NO_JOBS;
+  const jobsLoading = jobsQuery.isPending;
+  // No data and it failed: the whole list is an error. With data on screen, a failed refresh is only a note.
+  const jobsError = jobsQuery.isError && jobsQuery.data === undefined;
+  // Set when a comparison was requested but the profile is incomplete.
+  const [compareMissing, setCompareMissing] = useState<string[] | null>(null);
 
   const [shellView, setShellView] = useState<ShellView>(
     initialJobId ? "job" : section,
@@ -197,59 +216,30 @@ export function Workspace({
     if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
 
-  useEffect(() => {
-    if (status !== "authenticated") return;
-    fetch("/api/profile")
-      .then((r) => r.json())
-      .then((p: UserProfile) => {
-        setProfile(p);
-        setProfileLoading(false);
-      })
-      .catch(() => setProfileLoading(false));
-  }, [status]);
+  // Compare / gap analysis is the only feature that needs a complete profile.
+  function requestCompare(candidate: DBCandidate) {
+    if (profile?.profileComplete) setMatchCandidate(candidate);
+    else setCompareMissing(profile?.missing ?? []);
+  }
 
   useEffect(() => {
-    if (!profile) return;
-    const hasProfile = !!(
-      profile.linkedinUrl ||
-      profile.resumeText ||
-      profile.skills.length > 0
-    );
-    if (!hasProfile) return;
-
-    setJobsLoading(true);
-    fetch("/api/jobs")
-      .then((r) => r.json())
-      .then((j: DBJob[]) => {
-        setJobs(j);
-        setJobsLoading(false);
-      })
-      .catch(() => setJobsLoading(false));
-  }, [profile]);
-
-  useEffect(() => {
-    if (!initialCompareCandidateId || jobs.length === 0) return;
+    if (!initialCompareCandidateId || jobs.length === 0 || !profile) return;
     const candidate = jobs
       .flatMap((job) => job.candidates)
       .find((item) => item.id === initialCompareCandidateId);
-    if (candidate) setMatchCandidate(candidate);
-  }, [initialCompareCandidateId, jobs]);
+    if (!candidate) return;
+    if (profile.profileComplete) setMatchCandidate(candidate);
+    else setCompareMissing(profile.missing ?? []);
+  }, [initialCompareCandidateId, jobs, profile]);
 
-  async function handleVote(candidateId: string, type: "YES" | "NO") {
+  function handleVote(candidateId: string, type: "YES" | "NO") {
     if (!activeJob) return;
-    await fetch(`/api/jobs/${activeJob.id}/vote`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ candidateId, type }),
-    });
-    const res = await fetch("/api/jobs");
-    const updatedJobs = (await res.json()) as DBJob[];
-    setJobs(updatedJobs);
+    vote.mutate({ jobId: activeJob.id, candidateId, type });
   }
 
   function handleJobCreated(job: object) {
+    // useCreateJob has already put the job in the cached list.
     const newJob = job as DBJob;
-    setJobs((prev) => [newJob, ...prev]);
     setActiveJobId(newJob.id);
     setShowAddJob(false);
     setShellView("job");
@@ -284,13 +274,18 @@ export function Workspace({
   if (status === "loading" || profileLoading) return <LoadingScreen />;
   if (!session) return null;
 
-  const hasProfile =
-    profile &&
-    (profile.linkedinUrl || profile.resumeText || profile.skills.length > 0);
-
-  if (!hasProfile) {
-    router.push("/profile");
-    return <LoadingScreen />;
+  if (profileError || !profile) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-base)", padding: 16 }}>
+        <div style={{ maxWidth: 420, width: "100%" }}>
+          <ErrorState
+            title="We couldn't load your profile"
+            message={getErrorMessage(profileQuery.error ?? "UNKNOWN")}
+            onRetry={() => void profileQuery.refetch()}
+          />
+        </div>
+      </div>
+    );
   }
 
   const activeJob = jobs.find((j) => j.id === activeJobId);
@@ -332,6 +327,26 @@ export function Workspace({
         />
 
         <main className="app-main" style={{ flex: 1, minWidth: 0, padding: "32px 36px 64px" }}>
+          {compareMissing && (
+            <CompareProfilePrompt missing={compareMissing} onClose={() => setCompareMissing(null)} />
+          )}
+
+          {jobsError && !showAddJob && (
+            <ErrorState
+              title="We couldn't load your applications"
+              message={getErrorMessage(jobsQuery.error)}
+              onRetry={() => void jobsQuery.refetch()}
+            />
+          )}
+
+          {jobsQuery.isRefetchError && !jobsError && !showAddJob && (
+            <div style={{ marginBottom: 16 }}>
+              <InlineAlert action={{ label: "Retry", onClick: () => void jobsQuery.refetch() }}>
+                Couldn&apos;t refresh your applications. What&apos;s shown may be out of date.
+              </InlineAlert>
+            </div>
+          )}
+
           {showAddJob && (
             <JobInputPanel
               loading={false}
@@ -348,7 +363,7 @@ export function Workspace({
               userId={session.user.id}
               onBack={() => setActiveCandId(null)}
               onVote={(type) => handleVote(activeCandidate.id, type)}
-              onMatch={() => setMatchCandidate(activeCandidate)}
+              onMatch={() => requestCompare(activeCandidate)}
             />
           )}
 
@@ -358,27 +373,32 @@ export function Workspace({
               <TabBar activeTab={activeTab} onChange={setActiveTab} />
 
               {activeTab === "candidates" && (
-                <CandidateList
-                  candidates={sortedCandidates}
-                  job={activeJob}
-                  userId={session.user.id}
-                  onVote={handleVote}
-                  onOpen={setActiveCandId}
-                  onMatch={setMatchCandidate}
-                />
+                <HireSearchPanel key={activeJob.id} job={activeJob}>
+                  <CandidateList
+                    candidates={sortedCandidates}
+                    job={activeJob}
+                    userId={session.user.id}
+                    onVote={handleVote}
+                    onOpen={setActiveCandId}
+                    onMatch={requestCompare}
+                  />
+                </HireSearchPanel>
               )}
-              {activeTab === "gap" && sortedCandidates.length > 0 && profile && (
+              {activeTab === "gap" && !profile.profileComplete && (
+                <CompareProfilePrompt missing={profile.missing ?? []} />
+              )}
+              {activeTab === "gap" && profile.profileComplete && sortedCandidates.length > 0 && (
                 <GapAnalysis
                   job={activeJob}
                   top={sortedCandidates[0]}
                   profile={profile}
                 />
               )}
-              {activeTab === "log" && <ApolloLogPanel job={activeJob} />}
+              {activeTab === "log" && <SearchLogPanel job={activeJob} />}
             </div>
           )}
 
-          {!showAddJob && !activeCandidate && shellView === "dashboard" && (
+          {!showAddJob && !activeCandidate && !jobsError && shellView === "dashboard" && (
             <DashboardOverview
               userName={session.user.name ?? "there"}
               jobs={jobs}
@@ -388,13 +408,18 @@ export function Workspace({
               onOpenCandidate={(jobId, candidateId) => {
                 router.push(`/applications/${jobId}?candidate=${candidateId}`);
               }}
+              profileComplete={profile.profileComplete ?? false}
               onCompare={(jobId, candidateId) => {
+                if (!profile.profileComplete) {
+                  setCompareMissing(profile.missing ?? []);
+                  return;
+                }
                 router.push(`/applications/${jobId}?compare=${candidateId}`);
               }}
             />
           )}
 
-          {!showAddJob && !activeCandidate && shellView === "applications" && (
+          {!showAddJob && !activeCandidate && !jobsError && shellView === "applications" && (
             <ApplicationsOverview
               jobs={jobs}
               loading={jobsLoading}
@@ -407,7 +432,7 @@ export function Workspace({
             <p style={{ color: "var(--text-muted)", fontSize: 13 }}>Loading application…</p>
           )}
 
-          {!showAddJob && !activeCandidate && shellView === "job" && !activeJob && !jobsLoading && (
+          {!showAddJob && !activeCandidate && shellView === "job" && !activeJob && !jobsLoading && !jobsError && (
             <div className="card">
               <p className="eyebrow" style={{ marginBottom: 8 }}>Application unavailable</p>
               <p style={{ color: "var(--text-secondary)", marginBottom: 16 }}>This application could not be found in your workspace.</p>
@@ -423,6 +448,10 @@ export function Workspace({
           candidateName={matchCandidate.name}
           jobTitle={matchJob.role}
           onClose={() => setMatchCandidate(null)}
+          onProfileIncomplete={(missing) => {
+            setMatchCandidate(null);
+            setCompareMissing(missing);
+          }}
         />
       )}
     </div>

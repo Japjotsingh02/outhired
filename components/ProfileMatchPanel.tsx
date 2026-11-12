@@ -1,13 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { ProfileMatchResult } from "@/types";
+import { useCallback, useEffect, useRef } from "react";
+import { ApiError, getErrorMessage } from "@/lib/apiClient";
+import { useCompareProfile } from "@/lib/queries/match";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 
 interface Props {
   candidateId: string;
   candidateName: string;
   jobTitle: string;
   onClose: () => void;
+  /** Called when the server answers 403 PROFILE_INCOMPLETE (client state was stale). */
+  onProfileIncomplete?: (missing: string[]) => void;
 }
 
 function ScoreRing({ score }: { score: number }) {
@@ -52,49 +56,55 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
-export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClose }: Props) {
-  const [result, setResult] = useState<ProfileMatchResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState<string>("");
-  const [error, setError] = useState("");
+const CHIP_TONES = {
+  good: { bg: "rgba(34,197,94,0.1)", border: "rgba(34,197,94,0.2)", color: "#4ADE80" },
+  bad: { bg: "rgba(239,68,68,0.1)", border: "rgba(239,68,68,0.2)", color: "#F87171" },
+} as const;
 
-  async function runComparison() {
-    setLoading(true);
-    setError("");
-    setResult(null);
+function ChipCard({ title, items, tone }: { title: string; items: string[]; tone: keyof typeof CHIP_TONES }) {
+  if (items.length === 0) return null;
+  const { bg, border, color } = CHIP_TONES[tone];
+  return (
+    <div className="card">
+      <p style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
+        {title}
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {items.map((item) => (
+          <span key={item} style={{
+            fontSize: 12, padding: "4px 10px", borderRadius: 2,
+            background: bg, border: `1px solid ${border}`, color,
+          }}>{item}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-    try {
-      setStep("Scraping LinkedIn profiles via Proxycurl…");
-      await new Promise((r) => setTimeout(r, 600)); // Small delay for UX
+export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClose, onProfileIncomplete }: Props) {
+  const compare = useCompareProfile();
+  const { mutate } = compare;
+  const result = compare.data ?? null;
+  const loading = compare.isPending;
+  const failure: unknown = compare.error;
+  const profileIncomplete = failure instanceof ApiError && failure.code === "PROFILE_INCOMPLETE";
 
-      setStep("Sending profiles to Claude for analysis…");
+  const runComparison = useCallback(() => mutate({ candidateId, jobTitle }), [mutate, candidateId, jobTitle]);
 
-      const res = await fetch("/api/compare-profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ candidateId, jobTitle }),
-      });
+  // Run once when the panel opens (the ref keeps StrictMode's second mount from paying for a second analysis).
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    runComparison();
+  }, [runComparison]);
 
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error ?? "Comparison failed");
-      }
-
-      const data = await res.json() as ProfileMatchResult;
-      setResult(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
-      setLoading(false);
-      setStep("");
-    }
-  }
-
-  // Auto-run on mount
-  if (!loading && !result && !error) {
-    // Trigger on next tick
-    setTimeout(runComparison, 50);
-  }
+  // The stale-client case: the server says the profile is incomplete, so hand over to the prompt.
+  useEffect(() => {
+    if (!(failure instanceof ApiError) || failure.code !== "PROFILE_INCOMPLETE" || !onProfileIncomplete) return;
+    const details = failure.details as { missing?: unknown } | undefined;
+    onProfileIncomplete(Array.isArray(details?.missing) ? (details.missing as string[]) : []);
+  }, [failure, onProfileIncomplete]);
 
   const scoreLabel =
     !result ? "" :
@@ -162,7 +172,7 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
                 }}>↗</div>
               </div>
               <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Comparing profiles with AI…</p>
-              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>{step}</p>
+              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>Reading both profiles and comparing them. This can take a little while.</p>
               <div style={{ marginTop: 16, display: "flex", gap: 4, justifyContent: "center" }}>
                 {[0, 1, 2].map((i) => (
                   <div key={i} style={{
@@ -177,21 +187,17 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
           )}
 
           {/* Error state */}
-          {error && !loading && (
+          {compare.isError && !loading && (
             <div className="animate-fade-in" style={{ padding: "20px 0" }}>
-              <div style={{
-                padding: "16px", borderRadius: 12,
-                background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)",
-                marginBottom: 16,
-              }}>
-                <p style={{ fontSize: 13, color: "#F87171", marginBottom: 8 }}>{error}</p>
-                <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  Make sure PROXYCURL_API_KEY and ANTHROPIC_API_KEY are set in .env.local
-                </p>
-              </div>
-              <button className="btn-ghost" onClick={runComparison} style={{ fontSize: 13 }}>
-                Try again
-              </button>
+              <InlineAlert
+                action={
+                  profileIncomplete
+                    ? { label: "Open profile", href: "/profile" }
+                    : { label: "Try again", onClick: runComparison }
+                }
+              >
+                {getErrorMessage(failure)}
+              </InlineAlert>
             </div>
           )}
 
@@ -217,41 +223,8 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
                 </p>
               </div>
 
-              {/* Shared strengths */}
-              {result.sharedStrengths.length > 0 && (
-                <div className="card">
-                  <p style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
-                    Shared strengths
-                  </p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {result.sharedStrengths.map((s) => (
-                      <span key={s} style={{
-                        fontSize: 12, padding: "4px 10px", borderRadius: 2,
-                        background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)",
-                        color: "#4ADE80",
-                      }}>{s}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Gaps */}
-              {result.gaps.length > 0 && (
-                <div className="card">
-                  <p style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
-                    Gaps to close
-                  </p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {result.gaps.map((g) => (
-                      <span key={g} style={{
-                        fontSize: 12, padding: "4px 10px", borderRadius: 2,
-                        background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)",
-                        color: "#F87171",
-                      }}>{g}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <ChipCard title="Shared strengths" items={result.sharedStrengths} tone="good" />
+              <ChipCard title="Gaps to close" items={result.gaps} tone="bad" />
 
               {/* Advice */}
               <div className="card" style={{ borderColor: "rgba(196,92,62,0.2)", background: "rgba(196,92,62,0.04)" }}>
@@ -267,6 +240,7 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
                 className="btn-ghost"
                 onClick={runComparison}
                 style={{ fontSize: 12, alignSelf: "center" }}
+                type="button"
               >
                 Re-run comparison
               </button>

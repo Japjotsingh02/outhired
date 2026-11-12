@@ -15,3 +15,17 @@
 - AI is the fallback layer for job extraction, never the first choice. Gemini Flash for extraction, Claude Sonnet only for gap analysis.
 - Never cache a failed or empty parse result.
 - Do not mix refactors with logic changes in one pass.
+
+## Error handling
+Full policy in docs/ERROR_HANDLING.md.
+- Every route is wrapped in handle() and fails as JSON { error, code, details?, requestId }. Throw AppError subclasses; never return ad-hoc { error } bodies.
+- Browser requests use apiFetch (lib/apiClient.ts). Error text comes only from getErrorMessage; never build user-facing messages from raw server text.
+
+## Data fetching (client only; details in docs/ERROR_HANDLING.md)
+- Components never call fetch/apiFetch. They use TanStack Query hooks from lib/queries/; apiFetch is the only fetcher and every queryFn passes the AbortSignal.
+- Query keys are ["user", userId, ...]; enabled only when the session is authenticated; cache cleared on sign-out/user change; never persisted.
+- No copying query data into useState, no useEffect that fetches, no server prefetch/hydration, no Server Actions as queryFn.
+- Global QueryCache/MutationCache handlers only redirect on 401 and log the requestId in development. No toasts there.
+- Pure helpers must not import @tanstack/react-query (server-condition tests cannot load it).
+- One surface per error: error page or in-place ErrorState with Retry for failed loads; InlineAlert/field errors for forms and panels; toast for quick actions; ConfirmDialog only for decisions. Never window.alert/confirm, never a toast plus an inline message for the same failure.
+- 401 -> redirectIfAuthExpired. A failed poll never alerts; show "Having trouble updating" only after 3 in a row.

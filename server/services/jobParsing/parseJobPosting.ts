@@ -49,8 +49,6 @@ export async function parseJobPosting(
   const jsonLd = extractFromJsonLd(html);
   const meta = extractFromMeta(html, url);
 
-  console.log(jsonLd, meta, 'check1');
-
   // JSON-LD wording wins; metadata fills what JSON-LD lacks.
   const merged: ExtractionLayer = {
     role: jsonLd.role ?? meta.role,
@@ -71,9 +69,8 @@ export async function parseJobPosting(
     if (!verified) needsAI = true;
   }
 
-  console.log(needsAI, 'check2');
-
   let failed = false;
+  console.log(needsAI, 'check3');
   if (needsAI) {
     const outcome = await extractWithAI(url, html);
     if (outcome.ok) {

@@ -7,13 +7,16 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --conditions=react-server --import tsx --test tests/dates.test.ts tests/dates.tz.test.ts tests/roles.test.ts tests/flow.test.ts tests/postedMonth.test.ts tests/ssrf.test.ts"
+    "hire:smoke": "node --conditions=react-server --import tsx scripts/hire-search-smoke.ts",
+    "test": "npm run test:components && node --conditions=react-server --import tsx --test tests/dates.test.ts tests/dates.tz.test.ts tests/roles.test.ts tests/flow.test.ts tests/postedMonth.test.ts tests/ssrf.test.ts tests/profile.test.ts tests/profileGate.test.ts tests/parsedJobRepo.test.ts tests/hireSearchPure.test.ts tests/apifyClient.test.ts tests/hireSearchService.test.ts tests/errorHandling.test.ts tests/queries.test.ts",
+    "test:components": "node --import tsx --test tests/jobsQuery.test.tsx"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
     "@hookform/resolvers": "^5.9.2",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
+    "@tanstack/react-query": "5.104.5",
     "@types/bcryptjs": "^2.4.6",
     "@types/pg": "^8.21.0",
     "bcryptjs": "^3.0.3",
@@ -26,15 +29,22 @@
     "react-dom": "19.2.8",
     "react-hook-form": "^7.90.0",
     "server-only": "^0.0.1",
+    "sonner": "2.0.7",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@tanstack/eslint-plugin-query": "5.104.5",
+    "@tanstack/react-query-devtools": "5.104.5",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/jsdom": "30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "jsdom": "29.1.1",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"

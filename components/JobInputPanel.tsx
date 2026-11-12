@@ -4,11 +4,25 @@ import { useState } from "react";
 import { Controller, useForm, useWatch, type UseFormRegisterReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { ParsedJob, SearchLog } from "@/types";
+import { SearchLog } from "@/types";
 import { FieldError } from "@/components/ui";
 import { MonthYearSelect } from "@/components/MonthYearSelect";
 import { SkillTags } from "@/components/SkillTags";
 import { isAllowedPostedMonth, parseYearMonth, validatePostedMonth } from "@/lib/postedMonth";
+import { normalizeCompanyDomain } from "@/lib/domain";
+import { ApiError, fieldErrorsFromApiError, getErrorMessage } from "@/lib/apiClient";
+import { useCreateJob, useParseJob } from "@/lib/queries/jobs";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { toastInfo } from "@/components/ui/toast";
+
+/** Server field path (CreateJobSchema) -> review form field. */
+const REVIEW_FIELD_FOR: Record<string, keyof ReviewValues | undefined> = {
+  role: "jobTitle",
+  company: "company",
+  datePosted: "datePosted",
+  team: "team",
+  domain: "domain",
+};
 
 /* ── AnimatedLog ─────────────────────────────────────────────────────────── */
 export function AnimatedLog({ logs }: { logs: SearchLog[] }) {
@@ -87,7 +101,6 @@ interface JobInputPanelProps {
   onJobCreated: (job: object) => void;
 }
 
-type ParsedJobResult = Omit<ParsedJob, "url"> & { url: string | null };
 type InputMode = "description" | "url";
 
 /** Normalises what the user typed in the URL box; undefined when it is not a usable http(s) URL. */
@@ -118,6 +131,10 @@ const reviewSchema = z.object({
       if (message) ctx.addIssue({ code: "custom", message });
     }),
   team: z.string().trim(),
+  domain: z
+    .string()
+    .trim()
+    .refine((value) => value === "" || normalizeCompanyDomain(value) !== null, "Enter a website like stripe.com"),
   skills: z.array(z.string()),
 });
 type ReviewValues = z.infer<typeof reviewSchema>;
@@ -125,15 +142,19 @@ type ReviewValues = z.infer<typeof reviewSchema>;
 export function JobInputPanel({ loading, logs, onBack, onJobCreated }: JobInputPanelProps) {
   const [mode, setMode] = useState<InputMode>("description");
   const [stage, setStage] = useState<"source" | "review">("source");
-  const [parsedJob, setParsedJob] = useState<ParsedJobResult | null>(null);
+  // Only what the create call needs from the parsed posting (not a copy of any query data).
+  const [parsedLocation, setParsedLocation] = useState<string | null>(null);
   const [localLogs, setLocalLogs] = useState<SearchLog[]>([]);
-  const [localLoading, setLocalLoading] = useState(false);
-  const [error, setError] = useState("");
+  const parseJob = useParseJob();
+  const createJob = useCreateJob();
+  // The failed call of the current step, shown once, inline. `null` when there is none.
+  const failure: unknown = stage === "source" ? parseJob.error : createJob.error;
+  const localLoading = parseJob.isPending || createJob.isPending;
 
   const sourceForm = useForm<SourceValues>({ defaultValues: { jobDescription: "", jobUrl: "" } });
   const reviewForm = useForm<ReviewValues>({
     resolver: zodResolver(reviewSchema),
-    defaultValues: { jobTitle: "", company: "", datePosted: "", team: "", skills: [] },
+    defaultValues: { jobTitle: "", company: "", datePosted: "", team: "", domain: "", skills: [] },
   });
   const jobDescription = useWatch({ control: sourceForm.control, name: "jobDescription" });
 
@@ -153,28 +174,19 @@ export function JobInputPanel({ loading, logs, onBack, onJobCreated }: JobInputP
   async function parseSource(values: SourceValues) {
     const source = mode === "description" ? values.jobDescription.trim() : values.jobUrl.trim();
 
-    setError("");
-    setLocalLoading(true);
     setLocalLogs([]);
     addLog(mode === "description" ? "Reading job description" : "Fetching job posting", "loading", "Extracting role details for you to review…");
 
     try {
-      const response = await fetch("/api/parse-job", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mode === "description" ? { jobDescription: source } : { url: source }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "We couldn’t read those job details.");
-
-      const parsed = result as ParsedJobResult;
-      setParsedJob(parsed);
+      const parsed = await parseJob.mutateAsync(mode === "description" ? { jobDescription: source } : { url: source });
+      setParsedLocation(parsed.location || null);
       const parsedMonth = parsed.datePosted ? parseYearMonth(parsed.datePosted) : null;
       reviewForm.reset({
         jobTitle: parsed.role ?? "",
         company: parsed.company ?? "",
         datePosted: parsedMonth && isAllowedPostedMonth(parsedMonth) ? parsed.datePosted!.slice(0, 7) : "",
         team: parsed.team ?? "",
+        domain: parsed.companyDomain ?? "",
         skills: parsed.skills ?? [],
       });
       setLocalLogs([
@@ -186,55 +198,58 @@ export function JobInputPanel({ loading, logs, onBack, onJobCreated }: JobInputP
         },
       ]);
       setStage("review");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Something went wrong while reading the job.";
-      setError(message);
-      addLog("Could not parse the job", "error", message);
-    } finally {
-      setLocalLoading(false);
+    } catch {
+      // The error is on `parseJob.error` (shown below); 401 is redirected by the global handler.
+      setLocalLogs([]);
     }
   }
 
-  async function confirmAndSearch({ jobTitle, company, datePosted, team, skills }: ReviewValues) {
-    setError("");
-    setLocalLoading(true);
+  async function confirmAndSearch({ jobTitle, company, datePosted, team, domain, skills }: ReviewValues) {
     setLocalLogs([]);
     addLog("Searching for potential hires", "loading", `Looking for people at ${company} with experience as ${jobTitle}…`);
 
     try {
-      const response = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          company,
-          role: jobTitle,
-          datePosted: `${datePosted}-01`,
-          team: team || undefined,
-          skills,
-          location: parsedJob?.location || undefined,
-          inputMode: mode === "url" ? "URL" : "DESCRIPTION",
-          sourceUrl: mode === "url" ? toSourceUrl(sourceForm.getValues("jobUrl")) : undefined,
-        }),
+      const { status, data: result } = await createJob.mutateAsync({
+        company,
+        role: jobTitle,
+        datePosted: `${datePosted}-01`,
+        team: team || undefined,
+        domain: domain || undefined,
+        skills,
+        location: parsedLocation || undefined,
+        inputMode: mode === "url" ? "URL" : "DESCRIPTION",
+        sourceUrl: mode === "url" ? toSourceUrl(sourceForm.getValues("jobUrl")) : undefined,
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "We couldn’t create this application.");
+
+      // The server answers 200 (not 201) when this application already exists: open it.
+      if (status === 200) {
+        toastInfo("That application is already in your list.");
+        onJobCreated(result);
+        return;
+      }
 
       const count = result.candidates?.length ?? 0;
+      const searching = result.searchStatus === "RUNNING";
       setLocalLogs([
         {
           timestamp: new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }),
           step: "Search complete",
           status: "ok",
-          detail: count ? `${count} potential ${count === 1 ? "hire" : "hires"} found for ${company} · ${jobTitle}.` : `Your role is saved. We’ll show discovery signals here when matches are available.`,
+          detail: count
+            ? `${count} potential ${count === 1 ? "hire" : "hires"} found for ${company} · ${jobTitle}.`
+            : searching
+              ? "Your role is saved. We’re looking for people who joined; results appear on the next screen."
+              : "Your role is saved. Add the company website on the next screen to look for people who joined.",
         },
       ]);
       setTimeout(() => onJobCreated(result), 650);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Something went wrong while creating the application.";
-      setError(message);
-      addLog("Search could not start", "error", message);
-    } finally {
-      setLocalLoading(false);
+      setLocalLogs([]);
+      // Field errors from a 400 go on the fields; the alert (createJob.error) stays as the summary.
+      for (const [path, message] of Object.entries(fieldErrorsFromApiError(err))) {
+        const field = REVIEW_FIELD_FOR[path];
+        if (field) reviewForm.setError(field, { message });
+      }
     }
   }
 
@@ -262,7 +277,7 @@ export function JobInputPanel({ loading, logs, onBack, onJobCreated }: JobInputP
                 type="button"
                 role="tab"
                 aria-selected={mode === option}
-                onClick={() => { setMode(option); setError(""); }}
+                onClick={() => { setMode(option); parseJob.reset(); }}
                 className={mode === option ? "job-input-mode active" : "job-input-mode"}
                 disabled={isLoading}
               >
@@ -321,7 +336,7 @@ export function JobInputPanel({ loading, logs, onBack, onJobCreated }: JobInputP
                 <h2 className="editorial" style={{ fontSize: 27, lineHeight: 1.12, marginBottom: 6 }}>Confirm the role details</h2>
                 <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.55 }}>We extracted these from your {mode === "description" ? "description" : "job link"}. Correct anything that looks off before we search.</p>
               </div>
-              <button className="btn-ghost" type="button" onClick={() => { setStage("source"); setError(""); }} disabled={isLoading}>Edit source</button>
+              <button className="btn-ghost" type="button" onClick={() => { setStage("source"); createJob.reset(); parseJob.reset(); }} disabled={isLoading}>Edit source</button>
             </div>
 
             <div className="job-review-grid">
@@ -339,6 +354,14 @@ export function JobInputPanel({ loading, logs, onBack, onJobCreated }: JobInputP
                 <FieldError message={reviewForm.formState.errors.datePosted?.message} />
               </div>
               <ReviewField id="review-team" label="Team / department" placeholder="Optional" inputProps={reviewForm.register("team")} />
+              <ReviewField
+                id="review-domain"
+                label="Company website"
+                placeholder="stripe.com"
+                hint="Used to find people who joined. Example: stripe.com"
+                inputProps={reviewForm.register("domain")}
+                error={reviewForm.formState.errors.domain?.message}
+              />
               <div className="job-review-full-width">
                 <label className="field-label" htmlFor="review-skills">Skills from the job</label>
                 <Controller
@@ -365,7 +388,19 @@ export function JobInputPanel({ loading, logs, onBack, onJobCreated }: JobInputP
           </form>
         )}
 
-        {error && <p className="job-entry-error" role="alert">{error}</p>}
+        {failure !== null && (
+          <div style={{ marginTop: 16 }}>
+            <InlineAlert
+              action={
+                failure instanceof ApiError && failure.code === "PROFILE_INCOMPLETE"
+                  ? { label: "Open profile", href: "/profile" }
+                  : undefined
+              }
+            >
+              {getErrorMessage(failure)}
+            </InlineAlert>
+          </div>
+        )}
       </div>
 
       {allLogs.length > 0 && <AnimatedLog logs={allLogs} />}
@@ -380,6 +415,7 @@ function ReviewField({
   error,
   placeholder,
   required,
+  hint,
 }: {
   id: string;
   label: string;
@@ -387,11 +423,13 @@ function ReviewField({
   error?: string;
   placeholder?: string;
   required?: boolean;
+  hint?: string;
 }) {
   return (
     <div>
       <label className="field-label" htmlFor={id}>{label}{required ? " *" : ""}</label>
       <input id={id} className="input" placeholder={placeholder} {...inputProps} />
+      {hint && !error && <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5 }}>{hint}</p>}
       <FieldError message={error} />
     </div>
   );
