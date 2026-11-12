@@ -1,6 +1,7 @@
 import "server-only";
 import { lookup } from "node:dns/promises";
 import { BlockList } from "node:net";
+import { errorMessage } from "@/lib/errorMessage";
 
 /** Returns the real client IP from forwarded headers. */
 export function getClientIp(req: Request): string {
@@ -35,7 +36,7 @@ export async function isSafeUrl(value: string): Promise<boolean> {
   try {
     addresses = await lookup(host, { all: true });
   } catch (err) {
-    console.error(`[isSafeUrl] DNS lookup failed for ${host}:`, err instanceof Error ? err.message : err);
+    console.error(`[isSafeUrl] DNS lookup failed for ${host}:`, errorMessage(err));
     return false;
   }
   if (addresses.length === 0) return false;
@@ -107,7 +108,7 @@ function isBlockedAddress(address: string, family: number): boolean {
     return blockList.check(address, family === 6 ? "ipv6" : "ipv4");
   } catch (err) {
     // An address we cannot parse (e.g. an IPv6 zone id) is not safe to fetch.
-    console.error(`[isSafeUrl] Could not check address ${address}:`, err instanceof Error ? err.message : err);
+    console.error(`[isSafeUrl] Could not check address ${address}:`, errorMessage(err));
     return true;
   }
 }
