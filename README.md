@@ -160,7 +160,6 @@ User ──< Job ──< Candidate ──< Vote
 | `POST` | `/api/parse-job` | Parse a job URL into structured data |
 | `POST` | `/api/apollo/search` | Search for new hires at a company |
 | `POST` | `/api/apollo/email` | Reveal a candidate's email |
-| `POST` | `/api/proxycurl` | Enrich a LinkedIn profile |
 | `POST` | `/api/compare-profile` | Run AI profile comparison |
 
 ---
