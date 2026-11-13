@@ -1,4 +1,4 @@
-import { DBCandidate, DBVote } from "@/types";
+import { DBCandidate, DBJob, DBVote } from "@/types";
 
 /** Derive initials from a full name. */
 export function initials(name: string): string {
@@ -6,6 +6,36 @@ export function initials(name: string): string {
   if (parts.length === 0) return "??";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+/** The candidate's votes after this user votes `type`: the same vote again removes it, a different one replaces it. */
+export function applyVote(votes: DBVote[], userId: string, candidateId: string, type: DBVote["type"]): DBVote[] {
+  const mine = votes.find((v) => v.userId === userId);
+  const others = votes.filter((v) => v.userId !== userId);
+  if (mine?.type === type) return others;
+  return [...others, { id: mine?.id ?? `pending-${candidateId}`, userId, candidateId, type }];
+}
+
+export interface VoteVariables {
+  jobId: string;
+  candidateId: string;
+  type: DBVote["type"];
+}
+
+/** The jobs list after this user's vote, using the same toggle rules as the server. */
+export function withVote(jobs: DBJob[], userId: string, { jobId, candidateId, type }: VoteVariables): DBJob[] {
+  return jobs.map((job) =>
+    job.id !== jobId
+      ? job
+      : {
+          ...job,
+          candidates: job.candidates.map((candidate) =>
+            candidate.id === candidateId
+              ? { ...candidate, votes: applyVote(candidate.votes, userId, candidateId, type) }
+              : candidate,
+          ),
+        },
+  );
 }
 
 /** Aggregate vote counts for a candidate. */

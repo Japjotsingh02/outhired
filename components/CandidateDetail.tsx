@@ -11,6 +11,7 @@ import {
   MatchProfileButton,
   ConfidenceBar,
 } from "@/components/ui";
+import { joinedLabel } from "@/lib/hireSearch";
 
 interface CandidateDetailProps {
   candidate: DBCandidate;
@@ -70,9 +71,6 @@ export function CandidateDetail({
               }}
             >
               <span style={{ fontSize: 18, fontWeight: 700 }}>{c.name}</span>
-              {c.apolloSource && (
-                <Badge label="Apollo data" bg="var(--bg-elevated)" color="var(--text-secondary)" />
-              )}
               <Badge
                 label={`${cd.label} · ${cd.pct}%`}
                 bg={cd.bg}
@@ -89,12 +87,24 @@ export function CandidateDetail({
               </p>
             )}
 
+            {(joinedLabel(c) || c.previousCompany) && (
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                {[joinedLabel(c), c.previousCompany ? `from ${c.previousCompany}` : null].filter(Boolean).join(" · ")}
+              </p>
+            )}
+
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
               {c.location ?? "Location not listed"}
             </p>
 
+            {c.confidence === "LOW" && (
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, fontStyle: "italic" }}>
+                Lower confidence match
+              </p>
+            )}
+
             {c.linkedinUrl && (
-              <LinkedInLink url={c.linkedinUrl} label="View LinkedIn profile →" size={12} iconSize={16} />
+              <LinkedInLink url={c.linkedinUrl} label="View LinkedIn profile →" size={12} />
             )}
           </div>
         </div>
@@ -116,7 +126,7 @@ export function CandidateDetail({
                 lineHeight: 1.5,
               }}
             >
-              "{c.headline}"
+              &ldquo;{c.headline}&rdquo;
             </p>
           </div>
         )}
@@ -269,7 +279,7 @@ function LinkedInReachOut({ name, url }: { name: string; url: string }) {
         Message {firstName} to ask about interview rounds, timeline, and what
         helped them get the offer.
       </p>
-      <LinkedInLink url={url} label={`Message ${firstName} →`} size={12} iconSize={16} />
+      <LinkedInLink url={url} label={`Message ${firstName} →`} size={12} />
     </div>
   );
 }
