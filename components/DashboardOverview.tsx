@@ -1,8 +1,14 @@
 "use client";
 
+import { useState } from "react";
+import Link from "next/link";
 import { DBJob } from "@/types";
 import { STATUS_STYLE } from "@/constants";
-import { voteCounts, confidenceData, sortCandidatesByVotes } from "@/lib/helpers";
+import {
+  voteCounts,
+  confidenceData,
+  sortCandidatesByVotes,
+} from "@/lib/helpers";
 import { Badge } from "@/components/ui";
 
 interface DashboardOverviewProps {
@@ -13,6 +19,27 @@ interface DashboardOverviewProps {
   onAddJob: () => void;
   onOpenCandidate: (jobId: string, candidateId: string) => void;
   onCompare: (jobId: string, candidateId: string) => void;
+  /** From GET /api/profile. The banner shows only when this is false. */
+  profileComplete: boolean;
+}
+
+// Dismissal is only a convenience: storage can be unavailable or blocked.
+const BANNER_KEY = "outhired:profile-banner-dismissed";
+
+function readBannerDismissed(): boolean {
+  try {
+    return window.localStorage.getItem(BANNER_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeBannerDismissed() {
+  try {
+    window.localStorage.setItem(BANNER_KEY, "1");
+  } catch {
+    // Not persisted; the banner simply reappears next visit.
+  }
 }
 
 export function DashboardOverview({
@@ -23,23 +50,92 @@ export function DashboardOverview({
   onAddJob,
   onOpenCandidate,
   onCompare,
+  profileComplete,
 }: DashboardOverviewProps) {
+  const [bannerDismissed, setBannerDismissed] = useState(readBannerDismissed);
   const firstName = userName.split(" ")[0] || userName;
   const interviewing = jobs.filter((j) => j.status === "INTERVIEWING").length;
   const rejected = jobs.filter((j) => j.status === "REJECTED").length;
-  const active = jobs.filter((j) => j.status === "PENDING" || j.status === "INTERVIEWING").length;
+  const active = jobs.filter(
+    (j) => j.status === "PENDING" || j.status === "INTERVIEWING",
+  ).length;
 
   const featured = findFeaturedHire(jobs, userId);
   const greeting = greetingForNow();
 
   return (
     <div className="animate-fade-in">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 28 }}>
+      {!profileComplete && !bannerDismissed && (
+        <div
+          role="status"
+          className="card"
+          style={{
+            marginBottom: 20,
+            padding: "12px 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <p
+            style={{
+              fontSize: 13,
+              color: "var(--text-secondary)",
+              lineHeight: 1.5,
+            }}
+          >
+            Add your LinkedIn or resume and at least 3 skills to unlock
+            comparisons.{" "}
+            <Link
+              href="/profile"
+              style={{
+                color: "var(--text-primary)",
+                textDecoration: "underline",
+                textUnderlineOffset: 3,
+              }}
+            >
+              Complete profile
+            </Link>
+          </p>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => {
+              setBannerDismissed(true);
+              writeBannerDismissed();
+            }}
+            style={{
+              border: 0,
+              background: "none",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: 18,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 16,
+          marginBottom: 28,
+        }}
+      >
         <div>
           <p className="eyebrow" style={{ marginBottom: 10 }}>
             Dashboard · {greeting}
           </p>
-          <h1 className="editorial" style={{ fontSize: 36, lineHeight: 1.1, marginBottom: 8 }}>
+          <h1
+            className="editorial"
+            style={{ fontSize: 36, lineHeight: 1.1, marginBottom: 8 }}
+          >
             {greeting.split(",")[0]}, {firstName}
           </h1>
           <p style={{ fontSize: 14, color: "var(--text-secondary)" }}>
@@ -59,7 +155,13 @@ export function DashboardOverview({
           <h2 className="editorial" style={{ fontSize: 32, marginBottom: 8 }}>
             {featured.candidate.name}
           </h2>
-          <p style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 14 }}>
+          <p
+            style={{
+              fontSize: 14,
+              color: "var(--text-secondary)",
+              marginBottom: 14,
+            }}
+          >
             {featured.candidate.title} · {featured.job.company}
           </p>
           <Badge
@@ -78,17 +180,25 @@ export function DashboardOverview({
               lineHeight: 1.6,
             }}
           >
-            {featured.yes} yes votes · {featured.no} no votes. Community-confirmed signal, not a guaranteed outcome.
+            {featured.yes} yes votes · {featured.no} no votes.
+            Community-confirmed signal, not a guaranteed outcome.
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
               className="btn-ghost"
-              onClick={() => onOpenCandidate(featured.job.id, featured.candidate.id)}
+              onClick={() =>
+                onOpenCandidate(featured.job.id, featured.candidate.id)
+              }
             >
               Inspect signal
             </button>
             {featured.candidate.linkedinUrl && (
-              <button className="btn-primary" onClick={() => onCompare(featured.job.id, featured.candidate.id)}>
+              <button
+                className="btn-primary"
+                onClick={() =>
+                  onCompare(featured.job.id, featured.candidate.id)
+                }
+              >
                 Compare my profile
               </button>
             )}
@@ -102,16 +212,29 @@ export function DashboardOverview({
           <h2 className="editorial" style={{ fontSize: 28, marginBottom: 8 }}>
             No hire signal yet
           </h2>
-          <p style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6, maxWidth: 480 }}>
-            Add a role. We&apos;ll search for people who appear to have landed it, then let the community confirm the signal.
+          <p
+            style={{
+              fontSize: 14,
+              color: "var(--text-secondary)",
+              lineHeight: 1.6,
+              maxWidth: 480,
+            }}
+          >
+            Add a role. We&apos;ll search for people who appear to have landed
+            it, then let the community confirm the signal.
           </p>
         </div>
       )}
 
-      <div className="dashboard-stats" style={{
-        display: "grid", gridTemplateColumns: "repeat(4, 1fr)",
-        border: "1px solid var(--border)", marginBottom: 32,
-      }}>
+      <div
+        className="dashboard-stats"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          border: "1px solid var(--border)",
+          marginBottom: 32,
+        }}
+      >
         <StatCell label="Applications" value={jobs.length} />
         <StatCell label="Interviews" value={interviewing} accent />
         <StatCell label="Rejected" value={rejected} />
@@ -122,9 +245,14 @@ export function DashboardOverview({
         Your applications
       </p>
       {jobs.length === 0 ? (
-        <p style={{ fontSize: 14, color: "var(--text-muted)" }}>Nothing tracked yet.</p>
+        <p style={{ fontSize: 14, color: "var(--text-muted)" }}>
+          Nothing tracked yet.
+        </p>
       ) : (
-        <div className="data-table-wrap" style={{ border: "1px solid var(--border)" }}>
+        <div
+          className="data-table-wrap"
+          style={{ border: "1px solid var(--border)" }}
+        >
           <table className="data-table">
             <thead>
               <tr>
@@ -140,14 +268,25 @@ export function DashboardOverview({
                 const st = STATUS_STYLE[job.status] ?? STATUS_STYLE.PENDING;
                 const signal = job.candidates.length > 0 ? "Found" : "Watching";
                 return (
-                  <tr key={job.id} onClick={() => onSelectJob(job.id)} id={`dash-job-${job.id}`}>
+                  <tr
+                    key={job.id}
+                    onClick={() => onSelectJob(job.id)}
+                    id={`dash-job-${job.id}`}
+                  >
                     <td>{job.company}</td>
                     <td>{job.role}</td>
                     <td style={{ color: "var(--text-muted)" }}>
                       {formatApplied(job.appliedDate)}
                     </td>
                     <td style={{ color: st.color }}>{st.label}</td>
-                    <td style={{ color: job.candidates.length > 0 ? "var(--green)" : "var(--text-muted)" }}>
+                    <td
+                      style={{
+                        color:
+                          job.candidates.length > 0
+                            ? "var(--green)"
+                            : "var(--text-muted)",
+                      }}
+                    >
                       {signal}
                     </td>
                   </tr>
@@ -172,10 +311,19 @@ function StatCell({
   accent?: boolean;
   positive?: boolean;
 }) {
-  const color = accent ? "var(--accent)" : positive ? "var(--green)" : "var(--text-primary)";
+  const color = accent
+    ? "var(--accent)"
+    : positive
+      ? "var(--green)"
+      : "var(--text-primary)";
   return (
-    <div style={{ padding: "20px 18px", borderRight: "1px solid var(--border)" }}>
-      <p className="eyebrow" style={{ color: "var(--text-muted)", marginBottom: 10 }}>
+    <div
+      style={{ padding: "20px 18px", borderRight: "1px solid var(--border)" }}
+    >
+      <p
+        className="eyebrow"
+        style={{ color: "var(--text-muted)", marginBottom: 10 }}
+      >
         {label}
       </p>
       <p className="editorial" style={{ fontSize: 36, color, lineHeight: 1 }}>
