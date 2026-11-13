@@ -1,8 +1,6 @@
 /** How a mandatory field's final value was established. */
 export type FieldConfidence = "verified" | "ai" | "fallback";
 export type MandatoryField = "role" | "company" | "datePosted";
-export type OptionalField = "location" | "employmentType" | "team" | "locationType" | "skills";
-export type ExtractionField = MandatoryField | OptionalField;
 export type LocationType = "remote" | "hybrid" | "onsite" | null;
 
 export type JobConfidence = Record<MandatoryField, FieldConfidence>;

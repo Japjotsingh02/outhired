@@ -1,13 +1,13 @@
 import { Candidate } from "@/types";
 import { APOLLO_BASE, APOLLO_LEGACY_BASE, apolloHeaders, requireApolloKey } from "@/lib/apolloClient";
-import { APOLLO_WINDOW_EXTRA_DAYS } from "@/constants/jobParsing";
+import { HIRE_WINDOW_EXTRA_DAYS } from "@/constants/jobParsing";
 
 const DAY_MS = 86_400_000;
 
 export interface HireWindow {
   /** First instant of the posted month (UTC). */
   start: Date;
-  /** Last instant of the posted month plus APOLLO_WINDOW_EXTRA_DAYS (UTC). */
+  /** Last instant of the posted month plus HIRE_WINDOW_EXTRA_DAYS (UTC). */
   end: Date;
   /** Days from `start` back from now: Apollo's `changed_jobs_within_days` is relative to today. */
   daysBack: number;
@@ -15,14 +15,14 @@ export interface HireWindow {
 
 /**
  * Search window for new hires: start of the posted month to the end of that
- * month plus APOLLO_WINDOW_EXTRA_DAYS. `postedMonth` is Job.postedMonth (UTC).
+ * month plus HIRE_WINDOW_EXTRA_DAYS. `postedMonth` is Job.postedMonth (UTC).
  */
 export function hireWindow(postedMonth: Date, now: Date = new Date()): HireWindow {
   const year = postedMonth.getUTCFullYear();
   const month = postedMonth.getUTCMonth();
   const start = new Date(Date.UTC(year, month, 1));
   const endOfMonth = Date.UTC(year, month + 1, 1) - 1;
-  const end = new Date(endOfMonth + APOLLO_WINDOW_EXTRA_DAYS * DAY_MS);
+  const end = new Date(endOfMonth + HIRE_WINDOW_EXTRA_DAYS * DAY_MS);
   const daysBack = Math.max(1, Math.ceil((now.getTime() - start.getTime()) / DAY_MS));
   return { start, end, daysBack };
 }

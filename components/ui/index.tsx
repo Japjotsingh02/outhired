@@ -43,7 +43,6 @@ export function ConfidenceRow({
   total: number;
   pct: number;
   bar: string;
-  label: string;
 }) {
   return (
     <div style={{ marginTop: 14 }}>
@@ -74,7 +73,6 @@ export function LinkedInLink({
   url: string;
   label?: string;
   size?: number;
-  iconSize?: number;
 }) {
   return (
     <a
@@ -235,7 +233,6 @@ export function MatchProfileButton({
   size?: "sm" | "md";
 }) {
   const pad = size === "md" ? "8px 14px" : "7px 12px";
-  const fontSize = size === "md" ? 11 : 11;
 
   return (
     <button
@@ -244,7 +241,7 @@ export function MatchProfileButton({
       disabled={!hasLinkedIn}
       title={!hasLinkedIn ? "LinkedIn URL not available for this candidate" : ""}
       style={{
-        fontSize,
+        fontSize: 11,
         fontWeight: 600,
         padding: pad,
         background: hasLinkedIn ? "var(--accent)" : "transparent",

@@ -1,30 +1,10 @@
-import type { AIExtractionResult } from "@/types/jobParsing";
-
 export const MANDATORY_FIELDS = ["role", "company", "datePosted"] as const;
-
-export const OPTIONAL_FIELDS = [
-  "location",
-  "employmentType",
-  "team",
-  "locationType",
-  "skills",
-] as const;
 
 /** Maximum input lengths accepted by the job description extraction layers. */
 export const AI_CONTENT_MAX_CHARS = 3_000;
 export const HTML_STRIP_MAX_CHARS = 8_000;
 
-export const EMPTY_EXTRACTION: AIExtractionResult = {
-  role: null,
-  team: null,
-  company: null,
-  location: null,
-  datePosted: null,
-  locationType: null,
-  skills: [],
-};
-
-export const GEMINI_MODEL = "gemini-2.0-flash";
+export const GEMINI_MODEL = "gemini-3.5-flash-lite";
 
 /** Single retry for transient Gemini/Jina failures. */
 export const AI_RETRY_DELAY_MS = 1_000;
@@ -33,7 +13,7 @@ export const AI_RETRY_DELAY_MS = 1_000;
 export const POSTED_MONTH_MAX_AGE_MONTHS = 36;
 
 /** Apollo hire window extends this many days past the end of the posted month. */
-export const APOLLO_WINDOW_EXTRA_DAYS = 90;
+export const HIRE_WINDOW_EXTRA_DAYS = 90;
 
 export const ROLE_PHRASES: Record<string, string> = {
   "front end": "frontend", "front-end": "frontend",

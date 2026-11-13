@@ -11,6 +11,7 @@ import {
   VoteButton,
   MatchProfileButton,
 } from "@/components/ui";
+import { joinedLabel } from "@/lib/hireSearch";
 
 interface CandidateListProps {
   candidates: DBCandidate[];
@@ -74,9 +75,9 @@ function EmptyCandidates({ company }: { company: string }) {
           lineHeight: 1.5,
         }}
       >
-        We searched Apollo for people at {company} who match this role.
+        We searched for people at {company} who match this role.
         <br />
-        Results appear here when Apollo returns matches.
+        Results appear here when the search finds matches.
       </p>
     </div>
   );
@@ -132,23 +133,23 @@ function CandidateCard({
                 color="#4ADE80"
               />
             )}
-            {c.apolloSource && (
-              <Badge
-                label="Apollo data"
-                bg="var(--bg-elevated)"
-                color="var(--text-secondary)"
-              />
-            )}
           </div>
 
           <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 2 }}>
             {c.title} {c.previousRole ? `· ${c.previousRole}` : ""}
           </p>
           <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
-            {c.location ?? "Location not listed"}
+            {[joinedLabel(c), c.previousCompany ? `from ${c.previousCompany}` : null, c.location ?? "Location not listed"]
+              .filter(Boolean)
+              .join(" · ")}
           </p>
+          {c.confidence === "LOW" && (
+            <p style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+              Lower confidence match
+            </p>
+          )}
           {c.linkedinUrl && (
-            <LinkedInLink url={c.linkedinUrl} label="View on LinkedIn →" size={11} iconSize={14} />
+            <LinkedInLink url={c.linkedinUrl} label="View on LinkedIn →" size={11} />
           )}
         </div>
 
@@ -161,7 +162,6 @@ function CandidateCard({
         total={cd.total}
         pct={cd.pct}
         bar={cd.bar}
-        label={cd.label}
       />
 
       {/* Skills */}
