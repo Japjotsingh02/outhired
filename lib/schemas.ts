@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { validatePostedMonth } from "@/lib/postedMonth";
+import { normalizeCompanyDomain } from "@/lib/domain";
 
 export const GeminiExtractionSchema = z.object({
   role: z.string().trim().min(1).max(200).nullable().optional(),
@@ -42,10 +43,24 @@ export const CreateJobSchema = z.object({
   skills: z.array(z.string().trim().min(1).max(50)).max(30),
   location: optionalText(200),
   inputMode: z.enum(["URL", "DESCRIPTION", "MANUAL"]),
+  /** Company website; normalised to a bare domain. Empty means "not given". */
+  domain: z
+    .string()
+    .trim()
+    .max(300)
+    .transform((value, ctx) => {
+      if (value === "") return undefined;
+      const domain = normalizeCompanyDomain(value);
+      if (!domain) {
+        ctx.addIssue({ code: "custom", message: "Enter a valid company website, for example stripe.com" });
+        return z.NEVER;
+      }
+      return domain;
+    })
+    .optional(),
   sourceUrl: z
     .url()
     .max(2000)
     .refine((value) => /^https?:\/\//i.test(value), "sourceUrl must be http(s)")
     .optional(),
 });
-export type CreateJobInput = z.infer<typeof CreateJobSchema>;
