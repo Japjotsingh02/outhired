@@ -10,7 +10,6 @@ declare module "next-auth" {
       id: string;
       name: string;
       email: string;
-      hasProfile: boolean;
     };
   }
 }
@@ -18,7 +17,6 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     id: string;
-    hasProfile: boolean;
   }
 }
 
@@ -50,7 +48,6 @@ export const authOptions: NextAuthOptions = {
           id: user.id,
           name: user.name,
           email: user.email,
-          hasProfile: !!(user.linkedinUrl || user.resumeText),
         };
       },
     }),
@@ -59,14 +56,12 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
-        token.hasProfile = (user as { hasProfile?: boolean }).hasProfile ?? false;
       }
       return token;
     },
     async session({ session, token }) {
       if (token && session.user) {
         session.user.id = token.id;
-        session.user.hasProfile = token.hasProfile;
       }
       return session;
     },
