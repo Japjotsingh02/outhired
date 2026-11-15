@@ -24,6 +24,7 @@ export interface DBJob {
   searchStatus: SearchStatus; lastSearchedAt?: string | null; searchError?: string | null;
   searchTotalMatches?: number | null; searchSkippedInternal?: number | null;
   nextSearchAllowedAt?: string | null; // set when "search again" is not allowed yet
+  lockedCount?: number; // people found but not unlocked yet (only the number is sent)
 }
 export interface UserProfile {
   id: string; name: string; email: string; linkedinUrl?: string | null; resumeText?: string | null;
