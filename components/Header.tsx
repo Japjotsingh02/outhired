@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { initials } from "@/lib/helpers";
 import { BrandMark } from "@/components/ui";
+import { useUsage } from "@/lib/queries/usage";
 
 interface HeaderProps {
   userName: string;
@@ -15,10 +16,15 @@ export function Header({ userName, userEmail }: HeaderProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+  const usage = useUsage();
+  const creditsLeft = usage.data?.credits?.remaining;
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node)
+      ) {
         setDropdownOpen(false);
       }
     }
@@ -57,93 +63,127 @@ export function Header({ userName, userEmail }: HeaderProps) {
         </span>
       </div>
 
-      <div ref={dropdownRef} style={{ position: "relative" }}>
-        <button
-          id="user-menu-btn"
-          onClick={() => setDropdownOpen((o) => !o)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            background: "none",
-            border: "1px solid",
-            borderColor: dropdownOpen ? "var(--border-strong)" : "transparent",
-            padding: "4px 8px 4px 4px",
-            cursor: "pointer",
-          }}
-        >
-          <div
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {creditsLeft !== undefined && (
+          <a
+            href="/profile#plan"
             style={{
-              width: 28,
-              height: 28,
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 10,
-              fontWeight: 600,
-              color: "var(--text-primary)",
-            }}
-          >
-            {initials(userName ?? "U")}
-          </div>
-          <span
-            style={{
-              fontSize: 13,
+              fontSize: 12,
               color: "var(--text-secondary)",
-              maxWidth: 140,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
+              textDecoration: "none",
+              border: "1px solid var(--border)",
+              padding: "6px 10px",
               whiteSpace: "nowrap",
             }}
           >
-            {userName}
-          </span>
-        </button>
-
-        {dropdownOpen && (
-          <div
-            className="animate-fade-in"
+            {creditsLeft} {creditsLeft === 1 ? "credit" : "credits"} left
+          </a>
+        )}
+        <div ref={dropdownRef} style={{ position: "relative" }}>
+          <button
+            id="user-menu-btn"
+            onClick={() => setDropdownOpen((o) => !o)}
             style={{
-              position: "absolute",
-              top: "calc(100% + 8px)",
-              right: 0,
-              width: 240,
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border-strong)",
-              boxShadow: "0 16px 40px rgba(0,0,0,0.4)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              background: "none",
+              border: "1px solid",
+              borderColor: dropdownOpen
+                ? "var(--border-strong)"
+                : "transparent",
+              padding: "4px 8px 4px 4px",
+              cursor: "pointer",
             }}
           >
-            <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)" }}>
-              <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{userName}</p>
-              {userEmail && (
-                <p style={{ fontSize: 11, color: "var(--text-muted)" }}>{userEmail}</p>
-              )}
+            <div
+              style={{
+                width: 28,
+                height: 28,
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 10,
+                fontWeight: 600,
+                color: "var(--text-primary)",
+              }}
+            >
+              {initials(userName ?? "U")}
             </div>
-            <div style={{ padding: 6 }}>
-              <DropdownItem
-                id="profile-link"
-                label="Edit profile"
-                sublabel="Baseline for comparisons"
-                onClick={() => {
-                  setDropdownOpen(false);
-                  router.push("/profile");
+            <span
+              style={{
+                fontSize: 13,
+                color: "var(--text-secondary)",
+                maxWidth: 140,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {userName}
+            </span>
+          </button>
+
+          {dropdownOpen && (
+            <div
+              className="animate-fade-in"
+              style={{
+                position: "absolute",
+                top: "calc(100% + 8px)",
+                right: 0,
+                width: 240,
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-strong)",
+                boxShadow: "0 16px 40px rgba(0,0,0,0.4)",
+              }}
+            >
+              <div
+                style={{
+                  padding: "14px 16px",
+                  borderBottom: "1px solid var(--border)",
                 }}
-              />
-              <div style={{ height: 1, background: "var(--border)", margin: "6px 0" }} />
-              <DropdownItem
-                id="sign-out-btn"
-                label="Sign out"
-                onClick={() => {
-                  setDropdownOpen(false);
-                  signOut({ callbackUrl: "/login" });
-                }}
-                danger
-              />
+              >
+                <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                  {userName}
+                </p>
+                {userEmail && (
+                  <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    {userEmail}
+                  </p>
+                )}
+              </div>
+              <div style={{ padding: 6 }}>
+                <DropdownItem
+                  id="profile-link"
+                  label="Edit profile"
+                  sublabel="Baseline for comparisons"
+                  onClick={() => {
+                    setDropdownOpen(false);
+                    router.push("/profile");
+                  }}
+                />
+                <div
+                  style={{
+                    height: 1,
+                    background: "var(--border)",
+                    margin: "6px 0",
+                  }}
+                />
+                <DropdownItem
+                  id="sign-out-btn"
+                  label="Sign out"
+                  onClick={() => {
+                    setDropdownOpen(false);
+                    signOut({ callbackUrl: "/login" });
+                  }}
+                  danger
+                />
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </header>
   );
@@ -179,7 +219,9 @@ function DropdownItem({
     >
       <p style={{ fontSize: 13, fontWeight: 500 }}>{label}</p>
       {sublabel && (
-        <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{sublabel}</p>
+        <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+          {sublabel}
+        </p>
       )}
     </button>
   );

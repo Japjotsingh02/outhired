@@ -3,11 +3,11 @@
 import { useState } from "react";
 import { normalizeCompanyDomain } from "@/lib/domain";
 import { InlineAlert } from "@/components/ui/InlineAlert";
-import { UsageNote } from "@/components/UsageNote";
-import { getErrorMessage, isApiError } from "@/lib/apiClient";
-import { isUpgradeCode } from "@/lib/plans";
+import { ApiError, getErrorMessage, isApiError } from "@/lib/apiClient";
+import { creditsBeforeSearchLine, isUpgradeCode } from "@/lib/plans";
+import { useUsage } from "@/lib/queries/usage";
 import { formatDay } from "@/lib/hireSearch";
-import { useHireSearchStatus, useStartHireSearch } from "@/lib/queries/hireSearch";
+import { useHireSearchStatus, useStartHireSearch, useUnlockCandidates } from "@/lib/queries/hireSearch";
 import type { DBJob, SearchStatus } from "@/types";
 
 interface HireSearchPanelProps {
@@ -20,6 +20,21 @@ interface HireSearchPanelProps {
 export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
   const search = useHireSearchStatus(job);
   const start = useStartHireSearch(job.id);
+  const unlock = useUnlockCandidates(job.id);
+  const usage = useUsage();
+  const credits = usage.data?.credits;
+  const lockedCount = job.lockedCount ?? 0;
+  const outOfCredits = credits !== undefined && credits.remaining <= 0;
+  // The same message the server error maps to, built from the structured usage numbers.
+  const outOfCreditsText = getErrorMessage(
+    new ApiError(403, "PLAN_LIMIT_REACHED", "", {
+      feature: "hire_search",
+      plan: usage.data?.plan,
+      resetsAt: credits?.resetsAt,
+    }),
+  );
+  const upgradeAction = usage.data?.plan === "FREE" ? { label: "Upgrade to Pro", href: "/pricing" } : undefined;
+  const creditsLine = credits ? creditsBeforeSearchLine(credits) : null;
   const [website, setWebsite] = useState(job.domain ?? "");
   const [fieldError, setFieldError] = useState("");
 
@@ -86,7 +101,7 @@ export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
       {status === "FAILED" && !busy && (
         hitPlanLimit ? (
           <div style={{ marginBottom: 16 }}>
-            <InlineAlert action={{ label: "Upgrade to Pro", href: "/pricing" }}>{searchErrorText}</InlineAlert>
+            <InlineAlert action={upgradeAction}>{searchErrorText}</InlineAlert>
           </div>
         ) : (
           <div className="card" role="alert" style={{ marginBottom: 16 }}>
@@ -94,7 +109,7 @@ export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
             <button className="btn-ghost" type="button" disabled={busy} onClick={() => startSearch()}>
               {busy ? "Retrying…" : "Retry"}
             </button>
-            <UsageNote feature="hireSearch" />
+            {creditsLine && !outOfCredits && <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>{creditsLine}</p>}
           </div>
         )
       )}
@@ -111,14 +126,21 @@ export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
               onChange={(event) => setWebsite(event.target.value)}
               style={{ flex: 1, minWidth: 180 }}
             />
-            <button className="btn-primary" type="submit" disabled={busy}>
+            <button className="btn-primary" type="submit" disabled={busy || outOfCredits}>
               {busy ? "Starting…" : "Find hires"}
             </button>
           </div>
           <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
             Used to find people who joined. Example: stripe.com
           </p>
-          {!hasCandidates && <UsageNote feature="hireSearch" />}
+          {creditsLine && !outOfCredits && (
+            <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>{creditsLine}</p>
+          )}
+          {outOfCredits && (
+            <div style={{ marginTop: 10 }}>
+              <InlineAlert action={upgradeAction}>{outOfCreditsText}</InlineAlert>
+            </div>
+          )}
           {fieldError && (
             <p role="alert" style={{ color: "var(--red)", fontSize: 12, marginTop: 6 }}>
               {fieldError}
@@ -127,7 +149,7 @@ export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
           {!fieldError && searchErrorText && (
             hitPlanLimit ? (
               <div style={{ marginTop: 10 }}>
-                <InlineAlert action={{ label: "Upgrade to Pro", href: "/pricing" }}>{searchErrorText}</InlineAlert>
+                <InlineAlert action={upgradeAction}>{searchErrorText}</InlineAlert>
               </div>
             ) : (
               <p role="alert" style={{ color: "var(--red)", fontSize: 12, marginTop: 6 }}>
@@ -168,7 +190,7 @@ export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
           {start.error !== null &&
             (hitPlanLimit ? (
               <div style={{ width: "100%" }}>
-                <InlineAlert action={{ label: "Upgrade to Pro", href: "/pricing" }}>{getErrorMessage(start.error)}</InlineAlert>
+                <InlineAlert action={upgradeAction}>{getErrorMessage(start.error)}</InlineAlert>
               </div>
             ) : (
               <p role="alert" style={{ color: "var(--red)", fontSize: 12, width: "100%" }}>
@@ -180,7 +202,7 @@ export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
 
       {hasCandidates ? (
         children
-      ) : status === "DONE" && !busy ? (
+      ) : status === "DONE" && !busy && lockedCount === 0 ? (
         <div
           style={{
             textAlign: "center",
@@ -195,6 +217,42 @@ export function HireSearchPanel({ job, children }: HireSearchPanelProps) {
           </p>
         </div>
       ) : null}
+
+      {lockedCount > 0 && !busy && (
+        <div style={{ marginTop: 16 }}>
+          {outOfCredits ? (
+            <InlineAlert action={upgradeAction}>
+              {lockedCount} more {lockedCount === 1 ? "person" : "people"} found. {outOfCreditsText}
+            </InlineAlert>
+          ) : (
+            <div
+              className="card"
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+            >
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 500 }}>
+                  {lockedCount} more {lockedCount === 1 ? "person" : "people"} found
+                </p>
+                {credits && (
+                  <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                    Uses up to {Math.min(lockedCount, credits.remaining)} {Math.min(lockedCount, credits.remaining) === 1 ? "credit" : "credits"} · {credits.remaining} left this month
+                  </p>
+                )}
+              </div>
+              <button className="btn-ghost" type="button" disabled={unlock.isPending} onClick={() => unlock.mutate()}>
+                {unlock.isPending ? "Unlocking…" : "Unlock with credits"}
+              </button>
+              {unlock.error !== null && (
+                <div style={{ width: "100%" }}>
+                  <InlineAlert action={isUpgradeCode(isApiError(unlock.error) ? unlock.error.code : null) ? upgradeAction : undefined}>
+                    {getErrorMessage(unlock.error)}
+                  </InlineAlert>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
