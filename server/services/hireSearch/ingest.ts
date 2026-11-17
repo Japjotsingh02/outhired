@@ -1,5 +1,4 @@
 import "server-only";
-import type { MatchConfidence } from "@/generated/prisma";
 import { initials } from "@/lib/helpers";
 import {
   commitSearchResult,
@@ -16,9 +15,6 @@ export interface IngestJob {
   postedMonth: Date;
 }
 
-const HIGH_GAP_MONTHS = 3;
-const LOW_GAP_MONTHS = 12;
-
 /** Share (0-1) of the job's core-role words that appear in the candidate's title; null if the role has none. */
 export function roleMatchScore(jobRole: string, candidateTitle: string): number | null {
   const wanted = normalizeRole(jobRole).words;
@@ -29,27 +25,9 @@ export function roleMatchScore(jobRole: string, candidateTitle: string): number 
   return hits / wanted.size;
 }
 
-/**
- * HIGH: left a previous company within 3 months before starting.
- * LOW: year-only start, or the previous job ended over 12 months earlier (could be
- * an internal move or promotion: a heuristic, so the row is kept).
- * MEDIUM: everything else, including no previous company.
- */
-export function candidateConfidence(record: HireRecord): MatchConfidence {
-  if (record.startPrecision === "year") return "LOW";
-  if (!record.previousCompany) return "MEDIUM";
-  const started = monthIndex(record.startedMonth);
-  const ended = record.previousEndedMonth ? monthIndex(record.previousEndedMonth) : null;
-  if (started === null || ended === null) return "MEDIUM";
-  const gap = started - ended;
-  if (gap > LOW_GAP_MONTHS) return "LOW";
-  if (gap >= 0 && gap <= HIGH_GAP_MONTHS) return "HIGH";
-  return "MEDIUM";
-}
-
 /** True when the record's start falls inside [sinceMonth, untilMonth] (year-only: by year). */
 export function startsWithinWindow(
-  record: HireRecord,
+  record: Pick<HireRecord, "startedMonth" | "startPrecision">,
   window: { sinceMonth: string; untilMonth: string },
 ): boolean {
   if (record.startPrecision === "year") {
@@ -68,7 +46,7 @@ function dateOnly(value: string | undefined): Date | null {
   return match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))) : null;
 }
 
-/** Pure mapping from provider records to candidate rows: filters the window, scores, grades. */
+/** Pure mapping from provider records to candidate rows: filters the window, scores, de-duplicates. */
 export function buildCandidateRows(job: IngestJob, records: HireRecord[]): CandidateWrite[] {
   const window = hireWindow(job.postedMonth);
   const byExternalId = new Map<string, CandidateWrite>();
@@ -82,9 +60,9 @@ export function buildCandidateRows(job: IngestJob, records: HireRecord[]): Candi
       name: record.fullName,
       initials: initials(record.fullName),
       title: record.title,
-      headline: record.headline ?? null,
+      headline: null,
       linkedinUrl: record.profileUrl ?? null,
-      location: record.location ?? null,
+      location: record.country ?? null,
       currentCompany: record.companyName ?? null,
       previousRole: record.previousTitle ?? null,
       previousCompany: record.previousCompany ?? null,
@@ -92,9 +70,9 @@ export function buildCandidateRows(job: IngestJob, records: HireRecord[]): Candi
       startedMonth,
       startedYearOnly: record.startPrecision === "year",
       seniorityBucket: record.seniorityBucket ?? null,
-      countryCode: record.countryCode ?? null,
+      countryCode: null,
       roleMatchScore: roleMatchScore(job.role, record.title),
-      confidence: candidateConfidence(record),
+      confidence: record.confidence,
       sourceUpdatedAt: dateOnly(record.sourceUpdatedAt),
     });
   }

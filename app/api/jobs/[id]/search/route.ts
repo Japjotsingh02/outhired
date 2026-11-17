@@ -6,10 +6,13 @@ import { refreshHireSearch, startHireSearchForJob } from "@/server/services/hire
 
 type Context = { params: Promise<{ id: string }> };
 
+// The search runs inside the request: one provider call, then the result is saved.
+export const maxDuration = 30;
+
 // An empty body is allowed: the job's saved domain is used.
 const startBodySchema = z.object({ companyWebsite: z.string().trim().max(300).optional() }).strict();
 
-// POST /api/jobs/[id]/search: starts (or reuses) a "who joined" search; returns at once.
+// POST /api/jobs/[id]/search: runs (or reuses) a "who joined" search and returns the final state.
 export const POST = handle(async (req: NextRequest, { params }: Context) => {
   const user = await getSessionOrThrow();
   const { id } = await params;
@@ -20,7 +23,7 @@ export const POST = handle(async (req: NextRequest, { params }: Context) => {
   return NextResponse.json(summary);
 });
 
-// GET /api/jobs/[id]/search: checks a running search and ingests the results once.
+// GET /api/jobs/[id]/search: the current state of the job's search.
 export const GET = handle(async (_req: NextRequest, { params }: Context) => {
   const { id: userId } = await getSessionOrThrow();
   const { id } = await params;
