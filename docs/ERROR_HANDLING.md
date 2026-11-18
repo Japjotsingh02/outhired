@@ -27,7 +27,8 @@ Rules:
 | 401 `UNAUTHORIZED` | Redirect to `/login?reason=expired`; the login page shows "Please sign in again." |
 | 403 `PROFILE_INCOMPLETE` | Inline prompt with a link to `/profile` |
 | 403 `FEATURE_RESTRICTED` | "This feature is in private beta." |
-| 403 `PLAN_LIMIT_REACHED` | Details `{ feature, plan, limit, used, resetsAt }`. Free: "You've used your free search/Compare. Upgrade to Pro…"; Pro: "…resets on <Mon D>." InlineAlert with an "Upgrade to Pro" link to `/pricing` |
+| 403 `PLAN_LIMIT_REACHED` | Details `{ feature, plan, limit, used, resetsAt }` (hire search: in credits). "You've used this month's credits. They reset on <Mon D>." Compare: "You've used this month's Compare. It resets on <Mon D>." InlineAlert; Free also gets an "Upgrade to Pro" link to `/pricing` |
+| 403 `CANDIDATE_LOCKED` | "Unlock this person with a credit first, then compare." (Compare on someone the user has not unlocked) |
 | 403 `FREE_SEARCHES_PAUSED` | "Free searches are full this month. Upgrade to Pro or try again next month." (shared PDL budget used up; Pro keeps working until 120%) |
 | 503 `SEARCH_CAPACITY_REACHED` | "Searches are temporarily unavailable. Please try again later." (budget at 120%) |
 | 404 `NOT_FOUND` | In-place not-found state |

@@ -2,21 +2,29 @@ import "server-only";
 import type { Prisma } from "@/generated/prisma";
 import { prisma } from "@/server/db";
 
-/** Prisma include shape used whenever we return a job with its candidates. */
-export const JOB_WITH_CANDIDATES_INCLUDE = {
-  candidates: {
-    where: { hidden: false },
-    include: { votes: true },
-    // Votes are ranked client-side; this order breaks ties: confidence (HIGH first),
-    // best title match, then the start closest to the posted month.
-    orderBy: [
-      { confidence: "asc" },
-      { roleMatchScore: { sort: "desc", nulls: "last" } },
-      { startedMonth: { sort: "asc", nulls: "last" } },
-      { createdAt: "asc" },
-    ],
-  },
-} as const satisfies Prisma.JobInclude;
+/** Votes are ranked client-side; this order breaks ties: confidence (HIGH first), best title
+ *  match, then the start closest to the posted month. It also decides who is unlocked first. */
+export const CANDIDATE_RANK_ORDER = [
+  { confidence: "asc" },
+  { roleMatchScore: { sort: "desc", nulls: "last" } },
+  { startedMonth: { sort: "asc", nulls: "last" } },
+  { createdAt: "asc" },
+] as const satisfies Prisma.CandidateOrderByWithRelationInput[];
+
+/**
+ * Prisma include shape used whenever we return a job to its owner: only the people this user has
+ * unlocked (with votes), plus the total number of visible people so the rest can be counted as locked.
+ */
+export function jobWithCandidatesInclude(userId: string) {
+  return {
+    candidates: {
+      where: { hidden: false, unlocks: { some: { userId } } },
+      include: { votes: true },
+      orderBy: CANDIDATE_RANK_ORDER,
+    },
+    _count: { select: { candidates: { where: { hidden: false } } } },
+  } as const satisfies Prisma.JobInclude;
+}
 
 const SEARCH_JOB_SELECT = {
   id: true,
