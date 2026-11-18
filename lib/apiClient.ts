@@ -1,4 +1,5 @@
 // Shared by browser and tests: no server imports here.
+import { formatResetDay } from "@/lib/plans";
 
 /** A failed API call. `code` is the server's error code, or one chosen from the status / network. */
 export class ApiError extends Error {
@@ -146,8 +147,34 @@ function waitText(seconds?: number): string {
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
+/** "Dec 1" from details.resetsAt, or null. Structured details only, never raw server text. */
+function resetText(err: ApiError | null): string | null {
+  const details = err?.details;
+  return isRecord(details) && typeof details.resetsAt === "string" ? formatResetDay(details.resetsAt) : null;
+}
+
+function planLimitMessage(err: ApiError | null): string {
+  const details = err && isRecord(err.details) ? err.details : {};
+  const reset = resetText(err);
+  const again = reset ? `It resets on ${reset}.` : "";
+  if (details.feature === "compare") {
+    return details.plan === "PRO"
+      ? `You've reached this month's Compare limit. ${again}`.trim()
+      : "You've used your free Compare. Upgrade to Pro for unlimited gap analyses.";
+  }
+  return details.plan === "PRO"
+    ? `You've used all your searches this month. ${again}`.trim()
+    : "You've used your free search. Upgrade to Pro for more new-hire searches.";
+}
+
 function friendly(code: string, err: ApiError | null): string {
   switch (code) {
+    case "PLAN_LIMIT_REACHED":
+      return planLimitMessage(err);
+    case "FREE_SEARCHES_PAUSED":
+      return "Free searches are full this month. Upgrade to Pro or try again next month.";
+    case "SEARCH_CAPACITY_REACHED":
+      return "Searches are temporarily unavailable. Please try again later.";
     case "UNAUTHORIZED":
       return "Your session has ended. Please sign in again.";
     case "FORBIDDEN":
@@ -169,7 +196,9 @@ function friendly(code: string, err: ApiError | null): string {
     case "TIMEOUT":
       return "That took too long. Please try again.";
     case "LIMIT_REACHED":
-      return "You've reached the search limit for now. Try again later.";
+      return "Monthly search limit reached. Try again next month.";
+    case "DAILY_LIMIT_REACHED":
+      return "You've reached today's search limit. Try again tomorrow.";
     case "DOMAIN_NOT_FOUND":
       return "We couldn't find that company website. Check the address and try again.";
     case "SEARCH_TOO_SOON":

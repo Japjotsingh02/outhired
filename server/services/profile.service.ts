@@ -79,10 +79,10 @@ export async function requireCompleteProfile(
 
 /**
  * Where to send a user right after login or signup: /profile exactly once
- * (until onboardedAt is set), the dashboard afterwards.
+ * (until onboardedAt is set), the dashboard (/dashboard) afterwards.
  */
 export async function getPostLoginPath(userId: string): Promise<string> {
   const row = await getProfile(userId);
   if (!row) return "/login";
-  return row.onboardedAt === null ? "/profile" : "/";
+  return row.onboardedAt === null ? "/profile" : "/dashboard";
 }

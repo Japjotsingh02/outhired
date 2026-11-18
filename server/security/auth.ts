@@ -8,6 +8,12 @@ export interface SessionUser {
   email: string;
 }
 
+/** The signed-in user id, or null for a visitor. For public pages that only change a button or two. */
+export async function getOptionalUserId(): Promise<string | null> {
+  const session = await getServerSession(authOptions);
+  return session?.user?.id ?? null;
+}
+
 /** Returns the signed-in user from the NextAuth session or throws UnauthorizedError. */
 export async function getSessionOrThrow(): Promise<SessionUser> {
   const session = await getServerSession(authOptions);

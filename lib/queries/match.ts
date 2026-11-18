@@ -21,5 +21,8 @@ export function useCompareProfile() {
     onSuccess: (result, { candidateId }) => {
       if (userId) queryClient.setQueryData(queryKeys.match(userId, candidateId), result);
     },
+    onSettled: () => {
+      if (userId) void queryClient.invalidateQueries({ queryKey: queryKeys.usage(userId) });
+    },
   });
 }

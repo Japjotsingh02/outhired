@@ -6,6 +6,7 @@ export const queryKeys = {
   profile: (userId: string) => ["user", userId, "profile"] as const,
   jobs: (userId: string) => ["user", userId, "jobs"] as const,
   hireSearch: (userId: string, jobId: string) => ["user", userId, "hire-search", jobId] as const,
+  usage: (userId: string) => ["user", userId, "usage"] as const,
   matches: (userId: string) => ["user", userId, "match"] as const,
   match: (userId: string, candidateId: string) => ["user", userId, "match", candidateId] as const,
 };

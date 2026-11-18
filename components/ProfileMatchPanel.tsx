@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import { ApiError, getErrorMessage } from "@/lib/apiClient";
 import { useCompareProfile } from "@/lib/queries/match";
+import { UsageNote } from "@/components/UsageNote";
+import { isUpgradeCode } from "@/lib/plans";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 
 interface Props {
@@ -88,6 +90,7 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
   const loading = compare.isPending;
   const failure: unknown = compare.error;
   const profileIncomplete = failure instanceof ApiError && failure.code === "PROFILE_INCOMPLETE";
+  const hitPlanLimit = failure instanceof ApiError && isUpgradeCode(failure.code);
 
   const runComparison = useCallback(() => mutate({ candidateId, jobTitle }), [mutate, candidateId, jobTitle]);
 
@@ -144,6 +147,7 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
               Profile match — {candidateName}
             </h2>
             <p style={{ fontSize: 12, color: "var(--text-muted)" }}>{jobTitle}</p>
+            {!result && <UsageNote feature="compare" />}
           </div>
           <button
             id="close-match-panel"
@@ -193,7 +197,9 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
                 action={
                   profileIncomplete
                     ? { label: "Open profile", href: "/profile" }
-                    : { label: "Try again", onClick: runComparison }
+                    : hitPlanLimit
+                      ? { label: "Upgrade to Pro", href: "/pricing" }
+                      : { label: "Try again", onClick: runComparison }
                 }
               >
                 {getErrorMessage(failure)}

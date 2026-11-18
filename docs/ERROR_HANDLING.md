@@ -27,11 +27,15 @@ Rules:
 | 401 `UNAUTHORIZED` | Redirect to `/login?reason=expired`; the login page shows "Please sign in again." |
 | 403 `PROFILE_INCOMPLETE` | Inline prompt with a link to `/profile` |
 | 403 `FEATURE_RESTRICTED` | "This feature is in private beta." |
+| 403 `PLAN_LIMIT_REACHED` | Details `{ feature, plan, limit, used, resetsAt }`. Free: "You've used your free search/Compare. Upgrade to Pro…"; Pro: "…resets on <Mon D>." InlineAlert with an "Upgrade to Pro" link to `/pricing` |
+| 403 `FREE_SEARCHES_PAUSED` | "Free searches are full this month. Upgrade to Pro or try again next month." (shared PDL budget used up; Pro keeps working until 120%) |
+| 503 `SEARCH_CAPACITY_REACHED` | "Searches are temporarily unavailable. Please try again later." (budget at 120%) |
 | 404 `NOT_FOUND` | In-place not-found state |
 | 409 duplicate | Info toast and open the existing item |
+| 429 `LIMIT_REACHED` | "Monthly search limit reached. Try again next month." (PDL credit budget, or PDL's own 402) |
+| 429 `DAILY_LIMIT_REACHED` | "You've reached today's search limit. Try again tomorrow." |
 | 429 `RATE_LIMITED` | Inline message with the wait time (from `Retry-After`, else "a minute") |
 | 5xx, `PROVIDER_FAILED`, `TIMEOUT`, `NETWORK` | In-place error with Retry (a toast for quick actions) |
-| Polling | No alert for a failed poll. After 3 failures in a row, show "Having trouble updating". Stop at the existing timeout. |
 
 ## Server contract
 
@@ -71,7 +75,7 @@ No server prefetching or hydration, and no Server Actions as `queryFn`.
   - Form mutation: `InlineAlert` plus `setError` field errors; the input is kept.
   - Quick action (vote, skip onboarding): optimistic update where it makes sense, `toastError` with rollback.
 - **Rules for code**: do not copy query data into `useState`; do not fetch in `useEffect`. A form that edits server data is mounted once the data exists and takes its starting values from it.
-- **Polling** (hire search): `refetchInterval` is a pure function (`hireSearchPolling.ts`): 3 s while `RUNNING` and inside 4 minutes of `searchStartedAt`, otherwise off. `retry: 0`; "Having trouble updating" after 3 failures in a row, reset by a success.
+- **Hire search** has no polling: `POST /api/jobs/[id]/search` runs the whole search in one request, so the mutation's pending state is the loading state. A failed start shows in the panel (`start.error` through `getErrorMessage`). A job still `RUNNING` (another tab, or a request that died) gets one status read and a "Check again" button; the server marks a search stuck for over 2 minutes as `FAILED`/`TIMEOUT` so it can be retried.
 - **Pure helpers** go in files that do not import `@tanstack/react-query`, so the server-condition test runner can load them. Component tests use `npm run test:components` with a fresh `QueryClient` (`retry: false`, `gcTime: Infinity`).
 - **Left outside TanStack on purpose**: NextAuth `signIn`/`signOut` and `SessionProvider`'s own session requests.
 

@@ -252,7 +252,7 @@ export function Workspace({
   }
 
   function handleSelectDashboard() {
-    router.push("/");
+    router.push("/dashboard");
   }
 
   function handleSelectApplications() {
@@ -268,7 +268,7 @@ export function Workspace({
 
   function cancelAddJob() {
     setShowAddJob(false);
-    router.push(initialJobId ? `/applications/${initialJobId}` : section === "applications" ? "/applications" : "/");
+    router.push(initialJobId ? `/applications/${initialJobId}` : section === "applications" ? "/applications" : "/dashboard");
   }
 
   if (status === "loading" || profileLoading) return <LoadingScreen />;
