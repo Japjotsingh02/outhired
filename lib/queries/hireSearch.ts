@@ -13,6 +13,7 @@ export interface HireSearchSummary {
   lastSearchedAt: string | null;
   nextSearchAllowedAt: string | null;
   candidateCount: number;
+  lockedCount: number;
   searchError: string | null;
   searchTotalMatches: number | null;
   searchSkippedInternal: number | null;
@@ -35,6 +36,7 @@ function patchJob(job: DBJob, summary: HireSearchSummary): DBJob {
     searchError: summary.searchError,
     searchTotalMatches: summary.searchTotalMatches,
     searchSkippedInternal: summary.searchSkippedInternal,
+    lockedCount: summary.lockedCount,
   };
 }
 
@@ -89,6 +91,27 @@ export function useStartHireSearch(jobId: string) {
       );
     },
     // Success or failure, the job's state and candidates may have changed on the server.
+    onSettled: () => {
+      if (!userId) return;
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(userId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usage(userId) });
+    },
+  });
+}
+
+/** What POST /api/jobs/[id]/unlock returns. */
+export interface UnlockResult {
+  unlockedCount: number;
+  newlyUnlocked: number;
+  lockedCount: number;
+}
+
+/** POST /api/jobs/[id]/unlock: spend credits to show more of the people already found. */
+export function useUnlockCandidates(jobId: string) {
+  const queryClient = useQueryClient();
+  const { userId } = useAuthedUser();
+  return useMutation({
+    mutationFn: () => apiFetch<UnlockResult>(`/api/jobs/${jobId}/unlock`, { method: "POST" }),
     onSettled: () => {
       if (!userId) return;
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(userId) });

@@ -36,6 +36,7 @@ model User {
   votes          Vote[]
   profileMatches ProfileMatch[]
   usageEvents    UsageEvent[]
+  unlocks        CandidateUnlock[]
 
   @@map("users")
 }
@@ -68,6 +69,7 @@ model Job {
   searchTotalMatches    Int?
   searchSkippedInternal Int?
   candidates      Candidate[]
+  unlocks         CandidateUnlock[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
@@ -108,6 +110,7 @@ model Candidate {
   hidden             Boolean         @default(false)
   votes              Vote[]
   profileMatches     ProfileMatch[]
+  unlocks            CandidateUnlock[]
   // Scraped LinkedIn profile cache
   linkedinData       Json?
   lastScrapedAt      DateTime?
@@ -159,12 +162,31 @@ model UsageEvent {
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   kind        UsageKind
   jobId       String?
-  // Provider credits spent by this event (PDL bills 1 per record returned).
-  creditsUsed Int       @default(0)
+  // Credits charged to the user: 1 per person newly unlocked (HIRE_SEARCH only).
+  credits     Int       @default(0)
+  // Records PDL billed us for this event (0 when the people came from the shared results store).
+  pdlRecords  Int       @default(0)
   createdAt   DateTime  @default(now())
 
   @@index([userId, kind, createdAt])
   @@map("usage_events")
+}
+
+// A user paid 1 credit to see this person on this job. Re-opening the job is free.
+model CandidateUnlock {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId       String
+  job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidateId String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, jobId, candidateId])
+  @@index([userId, createdAt])
+  @@index([candidateId])
+  @@map("candidate_unlocks")
 }
 
 model ParsedJob {

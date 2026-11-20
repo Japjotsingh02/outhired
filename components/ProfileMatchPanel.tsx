@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import { ApiError, getErrorMessage } from "@/lib/apiClient";
 import { useCompareProfile } from "@/lib/queries/match";
-import { UsageNote } from "@/components/UsageNote";
-import { isUpgradeCode } from "@/lib/plans";
+import { compareLine, isUpgradeCode } from "@/lib/plans";
+import { useUsage } from "@/lib/queries/usage";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 
 interface Props {
@@ -90,6 +90,8 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
   const loading = compare.isPending;
   const failure: unknown = compare.error;
   const profileIncomplete = failure instanceof ApiError && failure.code === "PROFILE_INCOMPLETE";
+  const usage = useUsage();
+  const compareNote = usage.data?.compare ? compareLine(usage.data.compare) : null;
   const hitPlanLimit = failure instanceof ApiError && isUpgradeCode(failure.code);
 
   const runComparison = useCallback(() => mutate({ candidateId, jobTitle }), [mutate, candidateId, jobTitle]);
@@ -147,7 +149,9 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
               Profile match — {candidateName}
             </h2>
             <p style={{ fontSize: 12, color: "var(--text-muted)" }}>{jobTitle}</p>
-            {!result && <UsageNote feature="compare" />}
+            {!result && compareNote && (
+              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>{compareNote}</p>
+            )}
           </div>
           <button
             id="close-match-panel"
@@ -198,7 +202,9 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
                   profileIncomplete
                     ? { label: "Open profile", href: "/profile" }
                     : hitPlanLimit
-                      ? { label: "Upgrade to Pro", href: "/pricing" }
+                      ? usage.data?.plan === "PRO"
+                        ? undefined
+                        : { label: "Upgrade to Pro", href: "/pricing" }
                       : { label: "Try again", onClick: runComparison }
                 }
               >
@@ -210,16 +216,6 @@ export function ProfileMatchPanel({ candidateId, candidateName, jobTitle, onClos
           {/* Result */}
           {result && !loading && (
             <div className="animate-fade-in" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {result.cached && (
-                <div style={{
-                  fontSize: 11, color: "var(--text-muted)", textAlign: "center",
-                  padding: "4px 10px", background: "rgba(255,255,255,0.03)",
-                  borderRadius: 6, display: "inline-block", margin: "0 auto",
-                }}>
-                  ↩ Cached result
-                </div>
-              )}
-
               {/* Score + label */}
               <div style={{ textAlign: "center", padding: "12px 0" }}>
                 <ScoreRing score={result.score} />

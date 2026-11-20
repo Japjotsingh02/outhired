@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { handle, readJsonBody } from "@/server/http";
 import { getSessionOrThrow } from "@/server/security/auth";
 import { prisma } from "@/server/db";
-import { JOB_WITH_CANDIDATES_INCLUDE } from "@/server/repositories/jobs.repo";
+import { jobWithCandidatesInclude } from "@/server/repositories/jobs.repo";
+import { lockedCountFor } from "@/server/services/billing/credits";
 import { nextSearchAllowedAt, startHireSearchForJob } from "@/server/services/hireSearch";
 import { AppError } from "@/server/errors";
 import { CreateJobSchema } from "@/lib/schemas";
@@ -13,6 +14,12 @@ import { isUniqueViolation } from "@/lib/prismaErrors";
 // Creating a job with a company website also runs the hire search inside this request.
 export const maxDuration = 30;
 
+/** Drops the internal total and says how many found people are still locked (never who). */
+function withLockedCount<T extends { _count: { candidates: number }; candidates: unknown[] }>(job: T) {
+  const { _count, ...rest } = job;
+  return { ...rest, lockedCount: lockedCountFor(_count.candidates, job.candidates.length) };
+}
+
 // ─── GET /api/jobs ────────────────────────────────────────────────────────────
 // Returns all tracked jobs (with candidates + votes) for the logged-in user.
 export const GET = handle(async () => {
@@ -20,13 +27,13 @@ export const GET = handle(async () => {
 
   const jobs = await prisma.job.findMany({
     where: { userId },
-    include: JOB_WITH_CANDIDATES_INCLUDE,
+    include: jobWithCandidatesInclude(userId),
     orderBy: { createdAt: "desc" },
   });
 
   return NextResponse.json(
     jobs.map((job) => ({
-      ...job,
+      ...withLockedCount(job),
       nextSearchAllowedAt: nextSearchAllowedAt(job.lastSearchedAt, job.searchStatus),
     })),
   );
@@ -67,10 +74,10 @@ export const POST = handle(async (req: NextRequest) => {
     // Idempotent: the same application already exists, so return it.
     const existing = await prisma.job.findUnique({
       where: { userId_company_role_postedMonth: { userId, company, role, postedMonth } },
-      include: JOB_WITH_CANDIDATES_INCLUDE,
+      include: jobWithCandidatesInclude(userId),
     });
     if (!existing) throw err;
-    return NextResponse.json(existing, { status: 200 });
+    return NextResponse.json(withLockedCount(existing), { status: 200 });
   }
 
   // Hire discovery is best-effort: the job is already saved, so a search that cannot
@@ -87,13 +94,13 @@ export const POST = handle(async (req: NextRequest) => {
 
   const jobWithCandidates = await prisma.job.findUnique({
     where: { id: job.id },
-    include: JOB_WITH_CANDIDATES_INCLUDE,
+    include: jobWithCandidatesInclude(userId),
   });
 
   return NextResponse.json(
     jobWithCandidates && searchStartError
-      ? { ...jobWithCandidates, searchError: searchStartError }
-      : jobWithCandidates,
+      ? { ...withLockedCount(jobWithCandidates), searchError: searchStartError }
+      : jobWithCandidates && withLockedCount(jobWithCandidates),
     { status: 201 },
   );
 });

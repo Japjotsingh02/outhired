@@ -156,21 +156,22 @@ function resetText(err: ApiError | null): string | null {
 function planLimitMessage(err: ApiError | null): string {
   const details = err && isRecord(err.details) ? err.details : {};
   const reset = resetText(err);
-  const again = reset ? `It resets on ${reset}.` : "";
+  const again = reset ? `They reset on ${reset}.` : "They reset at the start of next month.";
   if (details.feature === "compare") {
+    const compareAgain = reset ? `It resets on ${reset}.` : "It resets at the start of next month.";
     return details.plan === "PRO"
-      ? `You've reached this month's Compare limit. ${again}`.trim()
-      : "You've used your free Compare. Upgrade to Pro for unlimited gap analyses.";
+      ? `You've reached this month's Compare limit. ${compareAgain}`
+      : `You've used this month's Compare. ${compareAgain}`;
   }
-  return details.plan === "PRO"
-    ? `You've used all your searches this month. ${again}`.trim()
-    : "You've used your free search. Upgrade to Pro for more new-hire searches.";
+  return `You've used this month's credits. ${again}`;
 }
 
 function friendly(code: string, err: ApiError | null): string {
   switch (code) {
     case "PLAN_LIMIT_REACHED":
       return planLimitMessage(err);
+    case "CANDIDATE_LOCKED":
+      return "Unlock this person with a credit first, then compare.";
     case "FREE_SEARCHES_PAUSED":
       return "Free searches are full this month. Upgrade to Pro or try again next month.";
     case "SEARCH_CAPACITY_REACHED":

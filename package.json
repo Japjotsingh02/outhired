@@ -9,7 +9,7 @@
     "lint": "eslint",
     "plan:set": "node --conditions=react-server --env-file=.env.local --import tsx scripts/set-plan.ts",
     "pdl:smoke": "node --conditions=react-server --env-file=.env.local --import tsx scripts/pdl-smoke.ts",
-    "test": "npm run test:components && node --conditions=react-server --import tsx --test tests/dates.test.ts tests/dates.tz.test.ts tests/roles.test.ts tests/flow.test.ts tests/postedMonth.test.ts tests/ssrf.test.ts tests/profile.test.ts tests/profileGate.test.ts tests/parsedJobRepo.test.ts tests/hireSearchPure.test.ts tests/pdlQuery.test.ts tests/pdlRecord.test.ts tests/pdlClient.test.ts tests/hireSearchService.test.ts tests/errorHandling.test.ts tests/queries.test.ts tests/entitlements.test.ts",
+    "test": "npm run test:components && node --conditions=react-server --import tsx --test tests/dates.test.ts tests/dates.tz.test.ts tests/roles.test.ts tests/flow.test.ts tests/postedMonth.test.ts tests/ssrf.test.ts tests/profile.test.ts tests/profileGate.test.ts tests/parsedJobRepo.test.ts tests/hireSearchPure.test.ts tests/pdlQuery.test.ts tests/pdlRecord.test.ts tests/pdlClient.test.ts tests/hireSearchService.test.ts tests/errorHandling.test.ts tests/queries.test.ts tests/credits.test.ts",
     "test:components": "node --import tsx --test tests/jobsQuery.test.tsx"
   },
   "dependencies": {

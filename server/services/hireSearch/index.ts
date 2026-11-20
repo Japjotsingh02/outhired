@@ -13,6 +13,7 @@ import {
   RateLimitedError,
   ServiceUnavailableError,
 } from "@/server/errors";
+import { countUnlocked } from "@/server/repositories/usage.repo";
 import { findFreshHireCache, saveHireCache } from "@/server/repositories/hireSearchCache.repo";
 import {
   claimSearchStart,
@@ -23,7 +24,7 @@ import {
   setSearchError,
   type SearchJob,
 } from "@/server/repositories/jobs.repo";
-import { assertCanHireSearch, recordCredits, refundUsage } from "@/server/services/billing/entitlements";
+import { assertCanSearchProvider, lockedCountFor, showCandidates } from "@/server/services/billing/credits";
 import { ingestRecords } from "@/server/services/hireSearch/ingest";
 import { createPdlNewHiresSource } from "@/server/services/hireSearch/pdlNewHires";
 import type { HireSource, SearchInput, SearchOutcome } from "@/server/services/hireSearch/types";
@@ -45,7 +46,10 @@ export interface SearchSummary {
   lastSearchedAt: Date | null;
   /** Earliest time a new search is allowed; null when one is allowed now. */
   nextSearchAllowedAt: Date | null;
+  /** People this user has unlocked on the job. */
   candidateCount: number;
+  /** People found but still locked (only the number is ever sent). */
+  lockedCount: number;
   searchError: string | null;
   /** All matches the provider reported, including people we did not fetch or hid. */
   searchTotalMatches: number | null;
@@ -120,12 +124,14 @@ export function nextSearchAllowedAt(
   return next.getTime() > Date.now() ? next : null;
 }
 
-function summarize(job: SearchJob): SearchSummary {
+async function summarize(userId: string, job: SearchJob): Promise<SearchSummary> {
+  const unlocked = await countUnlocked(userId, job.id);
   return {
     searchStatus: job.searchStatus,
     lastSearchedAt: job.lastSearchedAt,
     nextSearchAllowedAt: nextSearchAllowedAt(job.lastSearchedAt, job.searchStatus),
-    candidateCount: job._count.candidates,
+    candidateCount: unlocked,
+    lockedCount: lockedCountFor(job._count.candidates, unlocked),
     searchError: job.searchError,
     searchTotalMatches: job.searchTotalMatches,
     searchSkippedInternal: job.searchSkippedInternal,
@@ -135,7 +141,7 @@ function summarize(job: SearchJob): SearchSummary {
 async function loadSummary(userId: string, jobId: string): Promise<SearchSummary> {
   const job = await findOwnedSearchJob(userId, jobId);
   if (!job) throw new NotFoundError("Job not found");
-  return summarize(job);
+  return summarize(userId, job);
 }
 
 function assertAllowed(user: SearchUser): void {
@@ -237,7 +243,7 @@ export async function startHireSearchForJob(
     runningSince !== undefined &&
     now.getTime() - runningSince < STALE_RUNNING_MS
   ) {
-    return summarize(job);
+    return summarize(user.id, job);
   }
 
   const refreshAfterMs = config.refreshAfterHours * HOUR_MS;
@@ -271,13 +277,15 @@ export async function startHireSearchForJob(
     if (!config.cacheDisabled) {
       const cached = await readCache(cacheKey, now);
       if (cached) {
-        // A cache hit costs no credits and does not count against the daily limit.
+        // Stored results need no provider call, so the provider budget does not apply. The people
+        // still cost credits: showCandidates charges 1 per person this user has not unlocked yet.
         await ingestRecords(job, cached.records, {
           ...completion,
           creditsUsed: null,
           totalMatches: cached.total,
           skippedInternal: cached.skippedInternal,
         });
+        await showCandidates(user.id, job.id, now);
         return loadSummary(user.id, jobId);
       }
     }
@@ -287,19 +295,14 @@ export async function startHireSearchForJob(
     if (searchesToday >= config.dailyLimitPerUser) {
       throw new RateLimitedError("Daily search limit reached", undefined, "DAILY_LIMIT_REACHED");
     }
-    // Plan limit, then the shared monthly credit budget; inserts the usage event.
-    const reservation = await assertCanHireSearch(user.id, job.id, now);
+    // Credits left (PLAN_LIMIT_REACHED), then the shared provider budget. Nothing is charged yet:
+    // a provider error below costs the user nothing.
+    const allowance = await assertCanSearchProvider(user.id, now);
+    const size = Math.min(config.maxResults, allowance.size);
 
-    let outcome: SearchOutcome;
-    try {
-      outcome = await deps.source.search({ ...input, size: Math.min(config.maxResults, reservation.creditsAllowed) });
-    } catch (err) {
-      // The provider returned nothing: the user keeps their search.
-      await refundUsage(reservation);
-      throw err;
-    }
-    await recordCredits(reservation, outcome.creditsUsed);
-    // The schema strips anything that is not a kept field, so the cache can never hold more.
+    // The source drops internal role changes and promotions before returning records.
+    const outcome: SearchOutcome = await deps.source.search({ ...input, size });
+    // The schema strips anything that is not a kept field, so the shared store can never hold more.
     const entry = cachedSearch.parse({
       total: outcome.total,
       skippedInternal: outcome.skippedInternal,
@@ -311,8 +314,12 @@ export async function startHireSearchForJob(
       totalMatches: outcome.total,
       skippedInternal: outcome.skippedInternal,
     });
-    // Only a search that finished writes the shared cache, and failures are never cached.
-    if (written !== null) await writeCache(cacheKey, input, fingerprint, entry, now);
+    // Only a finished, complete search is stored for others: a short page that was cut by this
+    // user's credits (the provider had more) is not complete. Failures are never stored.
+    const complete = size >= config.maxResults || outcome.creditsUsed < size;
+    if (written !== null && complete) await writeCache(cacheKey, input, fingerprint, entry, now);
+    // The people found cost 1 credit each; a search that found nobody costs none.
+    await showCandidates(user.id, job.id, now, { pdlRecords: outcome.creditsUsed });
   } catch (err) {
     // Release the claim so the user can retry; the error still reaches the caller.
     await markSearchFailed(job.id, now, failureCode(err)).catch(() => undefined);
@@ -333,10 +340,10 @@ export async function refreshHireSearch(
 ): Promise<SearchSummary> {
   const job = await findOwnedSearchJob(userId, jobId);
   if (!job) throw new NotFoundError("Job not found");
-  if (job.searchStatus !== "RUNNING") return summarize(job);
+  if (job.searchStatus !== "RUNNING") return summarize(userId, job);
 
   const startedAt = job.searchStartedAt?.getTime() ?? 0;
-  if (deps.now().getTime() - startedAt <= STALE_RUNNING_MS) return summarize(job);
+  if (deps.now().getTime() - startedAt <= STALE_RUNNING_MS) return summarize(userId, job);
 
   await markSearchFailed(job.id, job.searchStartedAt, "TIMEOUT");
   return loadSummary(userId, jobId);

@@ -24,6 +24,7 @@ export interface FakeJob {
 }
 
 export interface FakeCandidate {
+  id: string;
   jobId: string;
   externalId: string;
   hidden: boolean;
@@ -42,8 +43,15 @@ export interface FakeUsageEvent {
   userId: string;
   kind: "HIRE_SEARCH" | "COMPARE";
   jobId: string | null;
-  creditsUsed: number;
+  credits: number;
+  pdlRecords: number;
   createdAt: Date;
+}
+
+export interface FakeUnlock {
+  userId: string;
+  jobId: string;
+  candidateId: string;
 }
 
 type Where = Record<string, unknown>;
@@ -80,6 +88,7 @@ export function createFakeDb() {
   const cache = new Map<string, { cacheKey: string; rows: unknown; expiresAt: Date }>();
   const users = new Map<string, FakeUser>();
   const usageEvents = new Map<string, FakeUsageEvent>();
+  const unlocks = new Map<string, FakeUnlock>();
   let eventSeq = 0;
   const counters = { candidateUpserts: 0, cacheWrites: 0 };
 
@@ -133,8 +142,22 @@ export function createFakeDb() {
       const key = `${jobId}|${externalId}`;
       const existing = candidates.get(key);
       if (existing) Object.assign(existing, update);
-      else candidates.set(key, { jobId, externalId, hidden: false, votes: [], ...create } as FakeCandidate);
+      else candidates.set(key, { id: key, jobId, externalId, hidden: false, votes: [], ...create } as FakeCandidate);
       return {};
+    },
+    async findMany({ where }: { where: { jobId: string; hidden: boolean } }) {
+      const rank = { HIGH: 0, MEDIUM: 1, LOW: 2 } as Record<string, number>;
+      const score = (c: FakeCandidate) => (typeof c.roleMatchScore === "number" ? c.roleMatchScore : -1);
+      const month = (c: FakeCandidate) => (c.startedMonth instanceof Date ? c.startedMonth.getTime() : Infinity);
+      return [...candidates.values()]
+        .filter((c) => c.jobId === where.jobId && c.hidden === where.hidden)
+        .sort(
+          (a, b) =>
+            (rank[String(a.confidence)] ?? 1) - (rank[String(b.confidence)] ?? 1) ||
+            score(b) - score(a) ||
+            month(a) - month(b),
+        )
+        .map((c) => ({ id: c.id }));
     },
   };
 
@@ -173,24 +196,42 @@ export function createFakeDb() {
     async count({ where }: { where: Where }) {
       return [...usageEvents.values()].filter((e) => eventMatches(e, where)).length;
     },
-    async aggregate({ where }: { where: Where }) {
-      const sum = [...usageEvents.values()]
+    async aggregate({ where, _sum }: { where: Where; _sum: { credits?: true; pdlRecords?: true } }) {
+      const field = _sum.credits ? "credits" : "pdlRecords";
+      const total = [...usageEvents.values()]
         .filter((e) => eventMatches(e, where))
-        .reduce((total, e) => total + e.creditsUsed, 0);
-      return { _sum: { creditsUsed: sum } };
+        .reduce((sum, e) => sum + e[field], 0);
+      return { _sum: { [field]: total } };
     },
-    async create({ data }: { data: Omit<FakeUsageEvent, "id" | "creditsUsed"> & { createdAt?: Date } }) {
+    async create({ data }: { data: Omit<FakeUsageEvent, "id"> }) {
       const id = `ue${++eventSeq}`;
-      usageEvents.set(id, { creditsUsed: 0, ...data, id, createdAt: data.createdAt ?? new Date() });
+      usageEvents.set(id, { ...data, id });
       return { id };
     },
     async deleteMany({ where }: { where: { id: string } }) {
       return { count: usageEvents.delete(where.id) ? 1 : 0 };
     },
-    async updateMany({ where, data }: { where: { id: string }; data: Partial<FakeUsageEvent> }) {
-      const event = usageEvents.get(where.id);
-      if (event) Object.assign(event, data);
-      return { count: event ? 1 : 0 };
+  };
+
+  const visibleUnlocks = (where: { userId: string; jobId?: string; candidateId?: string }) =>
+    [...unlocks.values()].filter(
+      (u) =>
+        u.userId === where.userId &&
+        (where.jobId === undefined || u.jobId === where.jobId) &&
+        (where.candidateId === undefined || u.candidateId === where.candidateId) &&
+        [...candidates.values()].some((c) => c.id === u.candidateId && !c.hidden),
+    );
+
+  const unlockDelegate = {
+    async count({ where }: { where: { userId: string; jobId?: string; candidateId?: string } }) {
+      return visibleUnlocks(where).length;
+    },
+    async findMany({ where }: { where: { userId: string; jobId: string } }) {
+      return visibleUnlocks(where).map((u) => ({ candidateId: u.candidateId }));
+    },
+    async createMany({ data }: { data: FakeUnlock[] }) {
+      for (const row of data) unlocks.set(`${row.userId}|${row.jobId}|${row.candidateId}`, row);
+      return { count: data.length };
     },
   };
 
@@ -203,6 +244,7 @@ export function createFakeDb() {
       candidate: candidateDelegate,
       user: userDelegate,
       usageEvent: usageDelegate,
+      candidateUnlock: unlockDelegate,
       $queryRaw: async () => [],
     };
     const run = queue.then(() => (arg as (tx: unknown) => Promise<unknown>)(tx));
@@ -217,13 +259,24 @@ export function createFakeDb() {
     counters,
     users,
     usageEvents,
+    unlocks,
     addUser(id: string, plan: FakeUser["plan"] = "FREE", planEndsAt: Date | null = null): FakeUser {
       const user = { id, plan, planEndsAt };
       users.set(id, user);
       return user;
     },
-    addUsage(userId: string, kind: FakeUsageEvent["kind"], createdAt: Date, creditsUsed = 0): void {
-      usageEvents.set(`ue${++eventSeq}`, { id: `ue${eventSeq}`, userId, kind, jobId: null, creditsUsed, createdAt });
+    addUsage(
+      userId: string,
+      kind: FakeUsageEvent["kind"],
+      createdAt: Date,
+      amounts: { credits?: number; pdlRecords?: number } = {},
+    ): void {
+      const id = `ue${++eventSeq}`;
+      usageEvents.set(id, { id, userId, kind, jobId: null, credits: 0, pdlRecords: 0, ...amounts, createdAt });
+    },
+    /** Marks people as already unlocked by a user on a job (by candidate id = "jobId|externalId"). */
+    addUnlock(userId: string, jobId: string, candidateId: string): void {
+      unlocks.set(`${userId}|${jobId}|${candidateId}`, { userId, jobId, candidateId });
     },
     addJob(overrides: Partial<FakeJob> & { id: string; userId: string }): FakeJob {
       const job: FakeJob = {
@@ -254,6 +307,7 @@ export function createFakeDb() {
         hireSearchCache: target.hireSearchCache,
         user: target.user,
         usageEvent: target.usageEvent,
+        candidateUnlock: target.candidateUnlock,
         $transaction: target.$transaction,
       };
       Object.assign(target, {
@@ -262,6 +316,7 @@ export function createFakeDb() {
         hireSearchCache: cacheDelegate,
         user: userDelegate,
         usageEvent: usageDelegate,
+        candidateUnlock: unlockDelegate,
         $transaction: transaction,
       });
       return () => Object.assign(target, saved);

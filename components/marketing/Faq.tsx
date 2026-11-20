@@ -2,12 +2,16 @@ import { PlusIcon } from "@/components/marketing/icons";
 
 const QUESTIONS = [
   {
+    q: "What is a credit?",
+    a: "1 credit = 1 person found. Free gets 3 every month, Pro gets 50. Credits reset monthly. Re-opening someone you've already found is free.",
+  },
+  {
     q: "How do you know who got the job?",
     a: "We don't claim certainty. We search professional profile data for people who started at that company in a matching role soon after the posting. Other users who applied for the same role then vote on which result is the real hire.",
   },
   {
     q: "What if no one shows up?",
-    a: "Profiles often update weeks after someone joins, so a new hire may not be in the data yet. Try the search again later.",
+    a: "Profiles often update weeks after someone joins, so a new hire may not be in the data yet. Try the search again later. A search that finds nobody costs no credits.",
   },
   {
     q: "What do I need for Compare with me?",
@@ -25,10 +29,6 @@ const QUESTIONS = [
         we will take you off the results.
       </>
     ),
-  },
-  {
-    q: "Do cached results use my searches?",
-    a: "No. If someone has already searched that job, you see the results for free.",
   },
 ];
 

@@ -1,7 +1,7 @@
 import "server-only";
 import type { PricingViewer } from "@/components/marketing/PricingPlans";
 import { getOptionalUserId } from "@/server/security/auth";
-import { getPlanId } from "@/server/services/billing/entitlements";
+import { getPlanId } from "@/server/services/billing/credits";
 
 export interface Viewer {
   loggedIn: boolean;
